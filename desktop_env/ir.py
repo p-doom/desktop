@@ -73,7 +73,10 @@ CANONICAL_KINDS: dict[str, str] = {
         "(dx: int, dy: int) -- wheel ticks, +dy up, +dx right. A one-argument "
         "(clicks,) form is also accepted and means (0, clicks)"
     ),
-    "coalesced_type": "(text: str) -- exact Unicode, one clipboard paste",
+    "coalesced_type": (
+        "(text: str) -- exact Unicode becomes input; the executor picks the "
+        "mechanism (keystrokes or a clipboard paste) from the payload"
+    ),
     "ascii_type": "(text: str) -- ASCII only, no newlines, per-keystroke",
     "wait": "(seconds: float) -- clamped to [0, 10]",
     "raise_for_test": "(message: str) -- fault injection for the test suite",

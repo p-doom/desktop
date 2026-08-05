@@ -201,7 +201,8 @@ def test_the_nonkvm_tier_installs_the_gtk_bindings_the_typing_path_imports(nonkv
     """``compile_unicode_coalesced_type`` emits ``import gi`` + Gtk 3.0."""
     from desktop_env.execute.guest_program import compile_unicode_coalesced_type
 
-    program = compile_unicode_coalesced_type("x")
+    # Non-ASCII: the payload class that still needs the guest's GTK bindings.
+    program = compile_unicode_coalesced_type("é")
     assert "gi.require_version('Gtk','3.0')" in program
     post = _section(nonkvm_text, "post")
     assert "python3-gi" in post and "gir1.2-gtk-3.0" in post

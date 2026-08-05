@@ -202,7 +202,8 @@ def test_a_program_containing_every_canonical_kind_executes_cleanly():
 
 def test_the_coalesced_type_program_executes_with_its_renamed_locals():
     """``compile_unicode_coalesced_type`` carries its own ``_de_pasted`` flag."""
-    source = GP.compile_unicode_coalesced_type("x")
+    # A non-ASCII payload, because that is now what selects the clipboard route.
+    source = GP.compile_unicode_coalesced_type("é")
     assert "_de_pasted" in source and "_r1a" not in source
     run = run_guest_program((ir.coalesced_type("héllo ✓"),), with_gi=True)
     assert run.returncode == 0, run.stderr

@@ -13,10 +13,14 @@ was validated on the pinned Ubuntu guest.  What it buys:
   * **Failure always cleans up.**  Any exception releases every key the program
     touched and every pointer button, so a crashed action cannot leave the guest
     with ``ctrl`` stuck down for the rest of the episode.
-  * **Unicode typing actually works.**  ``pyautogui.write`` is not Unicode-safe
-    on the pinned image; see ``compile_unicode_coalesced_type``'s docstring for
-    the three-generation clipboard-backend history that is encoded in the two
-    delay constants.
+  * **Unicode typing actually works.**  ``pyautogui.write`` drops every
+    character outside printable ASCII on the pinned image, so ``coalesced_type``
+    falls back to a GTK clipboard paste for those payloads -- and only those,
+    because that paste is itself a silent no-op in a terminal.  One predicate,
+    ``coalesced_type_mechanism``, decides; see
+    ``compile_unicode_coalesced_type``'s docstring for why, and for the
+    three-generation clipboard-backend history encoded in the two delay
+    constants.
   * **The click primitive is switchable.**  ``CLICK_BACKENDS`` exists because the
     release-side ``MotionNotify`` that PyAutoGUI emits is an *observable*
     difference to some toolkits, and isolating it required emitting the exact
@@ -73,6 +77,10 @@ ALL_POINTER_BUTTON_MASK = sum(BUTTON_MASKS.values())
 # target application to request the selection contents.
 CLIPBOARD_PASTE_DELAY_MS = 150
 CLIPBOARD_OWNER_LIFETIME_MS = 750
+# The two realisations of ``coalesced_type``.  See
+# ``coalesced_type_mechanism`` -- the ONE place that chooses between them.
+PYAUTOGUI_WRITE_TYPING_MECHANISM = "pyautogui_write"
+GTK_CLIPBOARD_TYPING_MECHANISM = "gtk_clipboard_ctrl_v"
 ATOMIC_RESULT_PREFIX = "DESKTOP_ENV_ATOMIC_RESULT="
 PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND = "pyautogui_release_motion"
 DIRECT_XTEST_CLICK_BACKEND = "direct_xtest_no_release_motion"
@@ -146,12 +154,51 @@ class AtomicExecutionResult:
         }
 
 
-def compile_unicode_coalesced_type(text: str) -> str:
-    """Compile exact Unicode text to one guest process / one clipboard paste.
+def coalesced_type_mechanism(text: str) -> str:
+    """Which substrate mechanism realises this text as guest input.
 
-    This compiler is the sole production-semantics typing path.
-    ``pyautogui.write`` is deliberately forbidden because it is not Unicode-safe
-    on the pinned Ubuntu guest.
+    THE one decision point.  ``coalesced_type`` is an intent -- *this text
+    becomes input* -- and the Operation vocabulary deliberately says nothing
+    about how.  Everything that needs to know the answer (the compiler below,
+    the receipt's ``backend_primitives``) asks here rather than re-deciding.
+
+    The predicate is "can ``pyautogui.write`` express this text": printable
+    ASCII, ``U+0020``-``U+007E``.  Those characters are exactly the ones in the
+    pinned guest's ``pyautogui.KEYBOARD_MAPPING``; anything outside it --
+    accents, CJK, emoji, and also the control characters, for which a keystroke
+    is the wrong encoding of the intent -- is silently DROPPED by
+    ``pyautogui.write`` and must take the clipboard route.
+    """
+    if not isinstance(text, str):
+        raise TypeError("coalesced type text must be a string")
+    if all(" " <= character <= "~" for character in text):
+        return PYAUTOGUI_WRITE_TYPING_MECHANISM
+    return GTK_CLIPBOARD_TYPING_MECHANISM
+
+
+def compile_unicode_coalesced_type(text: str) -> str:
+    """Compile text to one guest process that makes it input, by either route.
+
+    ``coalesced_type_mechanism`` picks the route from the payload:
+    ``pyautogui.write(text, interval=0)`` for printable ASCII, the GTK clipboard
+    below for everything else.  Callers do not choose and cannot; the Operation
+    vocabulary has one typing intent and this is where it is realised.
+
+    WHY THE SPLIT EXISTS, because the code cannot show it.  The clipboard route
+    pastes with ``Ctrl-A`` + ``Ctrl-V``, and **in gnome-terminal ``Ctrl-V`` is
+    readline's quoted-insert, not paste** (the terminal's paste chord is
+    ``Ctrl-Shift-V``).  So in a terminal the whole program runs, owns the
+    selection, proves its round trip, injects both chords and reports ``ok`` --
+    while nothing is typed, and the *following* ``Return`` is swallowed as a
+    literal ``^M`` by the pending quoted-insert.  A silent no-op with a clean
+    receipt.  That is what took the sign-of-life gate from a sealed 4/4 to 0/4
+    (jobs 138010/138012 against 138001-138004): all three typing cells died,
+    ``command_executed: false``, transcript ending ``SOLV2-LS$ ^M``, zero errors
+    anywhere.  ``pyautogui.write`` -- what the previous runner used for every
+    ``type`` action -- has no such chord and is restored here for the payloads
+    it can express.  ``Ctrl-Shift-V`` was rejected as the alternative: it is
+    right for gnome-terminal and wrong nearly everywhere else, which trades one
+    context-dependent bug for another.
 
     Clipboard-backend history on the pinned image, oldest to newest:
 
@@ -169,8 +216,8 @@ def compile_unicode_coalesced_type(text: str) -> str:
     inside the clipboard owner is deliberately redundant with it so the paste
     replaces rather than appends even when ownership stole the selection.
     """
-    if not isinstance(text, str):
-        raise TypeError("coalesced type text must be a string")
+    if coalesced_type_mechanism(text) == PYAUTOGUI_WRITE_TYPING_MECHANISM:
+        return f"pyautogui.write({text!r},interval=0)"
     encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
     program = f"""
 import base64,gi
@@ -654,7 +701,7 @@ def compile_atomic_guest_program(
             lines.extend(
                 [
                     f"{indent}{compile_unicode_coalesced_type(text)}",
-                    f"{indent}_de_backend_primitives.append({{'kind':'coalesced_type','call':'gtk_clipboard_ctrl_v','utf8_bytes':{len(text.encode('utf-8'))}}})",
+                    f"{indent}_de_backend_primitives.append({{'kind':'coalesced_type','call':{coalesced_type_mechanism(text)!r},'utf8_bytes':{len(text.encode('utf-8'))}}})",
                     f"{indent}_de_trace.append({{'kind':'coalesced_type','args':[{text!r}]}})",
                 ]
             )
