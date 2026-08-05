@@ -1,0 +1,205 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# =========================================================================== #
+# A KVM-FREE DESKTOP TIER.
+#
+# Translated from anthropics/claude-quickstarts `computer-use-demo` (MIT):
+# Ubuntu 22.04 + Xvfb / x11vnc / xdotool / mutter / tint2 / noVNC, running as a
+# non-root user with no privileged flags and no /dev/kvm.
+#
+# *** READ THIS BEFORE USING IT FOR ANYTHING THAT PRODUCES A NUMBER. ***
+#
+# This is a BROWSER-AND-APPS-ON-A-DESKTOP runtime.  It is NOT the OSWorld guest
+# VM.  It does not contain the OSWorld guest agent, the OSWorld task setup
+# machinery, or the pinned application versions any OSWorld task was authored
+# against.  Therefore:
+#
+#     IT GIVES NO OSWorld-Verified PARITY, EVER.
+#
+# It is a tier BENEATH the KVM tier, for fast iteration on plumbing: does the
+# transport reach a guest, does a click land, does the readiness heuristic fire,
+# does the pool lease and retire.  It is NEVER a replacement for the KVM tier,
+# and a benchmark number produced here is not a benchmark number.
+#
+# THERE IS NO BROWSER IN THIS TIER, and that is a statement of fact rather than an
+# omission to be fixed casually.  On the ubuntu:22.04 base above:
+#
+#     apt-get install chromium-browser  ->  "Package 'chromium-browser' has no
+#                                            installation candidate" (a snap
+#                                            transitional stub, universe)
+#     apt-get install chromium          ->  no candidate at all
+#     apt-get install firefox           ->  1:1snap1-0ubuntu2, also a snap stub
+#
+# Snaps need systemd and a writable /snap, neither of which exists in an Apptainer
+# instance, so none of the three installs a working browser.  Adding one means a
+# third-party PPA or an upstream tarball -- a supply-chain decision, not a package
+# name -- and it must be made deliberately, not by pasting `chromium` into the list
+# below and assuming the build proves it.
+#
+# WHAT THAT MEANS FOR A CALLER: this tier can check the transport, the executor,
+# the readiness heuristic and the pool.  It cannot check anything browser-shaped.
+# If you add a browser, it will want a WRITABLE profile directory, and a .sif is
+# read-only, so the instance will need `--writable-tmpfs` (which
+# `ApptainerSandboxProvider` passes by default) or an explicit `--overlay`; a
+# startup crash mentioning the profile directory is that, and the fix is the
+# overlay rather than a change to this file.
+#
+# Second flagged risk: `apptainer instance start` does not fork the whole startup
+# script the way a Docker ENTRYPOINT does.  %startscript below launches the X
+# stack in the background; if an instance comes up with no display, check that
+# Xvfb actually survived, because a non-daemonising service under
+# `instance start` is the usual cause.
+# =========================================================================== #
+
+%labels
+    Purpose  non-kvm-desktop-tier
+    Parity   none
+    Upstream anthropics/claude-quickstarts:computer-use-demo
+    License  MIT (upstream), see LICENSE-THIRD-PARTY
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    export DEBIAN_PRIORITY=high
+    apt-get update
+    apt-get -y upgrade
+
+    # UI stack.  xdotool is the input path for this tier: there is no in-guest
+    # HTTP agent here, so a caller drives it over `apptainer exec` rather than
+    # over the transport in desktop_env/execute/transport.py.
+    apt-get -y install --no-install-recommends \
+        xvfb \
+        xterm \
+        xdotool \
+        scrot \
+        imagemagick \
+        x11-apps \
+        xdg-utils \
+        mutter \
+        tint2 \
+        x11vnc \
+        net-tools \
+        netcat-openbsd \
+        curl \
+        git \
+        ca-certificates \
+        python3 \
+        python3-pip \
+        python3-tk \
+        python3-gi \
+        gir1.2-gtk-3.0 \
+        software-properties-common
+
+    # Userland apps.  Kept minimal on purpose: every application added here is a
+    # version that differs from the OSWorld guest's, which widens the gap this
+    # tier already has.
+    apt-get -y install --no-install-recommends \
+        libreoffice \
+        gedit \
+        pcmanfm \
+        galculator \
+        xpdf \
+        unzip
+
+    # noVNC, pinned, so a human can watch a rollout without an X forward.
+    git clone --branch v1.5.0 --depth 1 https://github.com/novnc/noVNC.git /opt/noVNC
+    git clone --branch v0.12.0 --depth 1 https://github.com/novnc/websockify \
+        /opt/noVNC/utils/websockify
+    ln -sf /opt/noVNC/vnc.html /opt/noVNC/index.html
+
+    # pyautogui + python-xlib give this tier the same input primitive names the
+    # KVM guest has, so a guest program compiled by
+    # desktop_env/execute/guest_program.py runs here too.  That is the only reason
+    # this tier is useful for testing the executor at all.
+    python3 -m pip install --no-cache-dir pyautogui==0.9.54 python-xlib==0.33 pillow
+
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+    mkdir -p /opt/desktop-env/bin
+    cat > /opt/desktop-env/bin/start-desktop <<'SCRIPT'
+#!/bin/bash
+# Bring up the X stack.  Each step waits for its predecessor: starting mutter
+# before Xvfb is listening produces an instance that looks alive and has no
+# window manager, which then looks like "clicks do nothing".
+set -e
+: "${DISPLAY_NUM:=1}"
+: "${WIDTH:=1920}"
+: "${HEIGHT:=1080}"
+: "${VNC_PORT:=5900}"
+: "${NOVNC_PORT:=6080}"
+export DISPLAY=":${DISPLAY_NUM}"
+
+if [ ! -e "/tmp/.X${DISPLAY_NUM}-lock" ]; then
+    Xvfb "$DISPLAY" -ac -screen 0 "${WIDTH}x${HEIGHT}x24" -retro -dpi 96 \
+        -nolisten tcp -nolisten unix &
+fi
+
+deadline=$(( $(date +%s) + 15 ))
+until xdpyinfo >/dev/null 2>&1; do
+    if [ "$(date +%s)" -gt "$deadline" ]; then
+        echo "Xvfb failed to start within 15s" >&2
+        exit 1
+    fi
+    sleep 0.1
+done
+
+tint2 -c /opt/desktop-env/tint2rc >/tmp/tint2.log 2>&1 &
+XDG_SESSION_TYPE=x11 mutter --x11 --sm-disable >/tmp/mutter.log 2>&1 &
+x11vnc -display "$DISPLAY" -forever -shared -nopw -rfbport "$VNC_PORT" \
+    -quiet >/tmp/x11vnc.log 2>&1 &
+/opt/noVNC/utils/novnc_proxy --vnc "localhost:${VNC_PORT}" \
+    --listen "$NOVNC_PORT" >/tmp/novnc.log 2>&1 &
+
+echo "desktop up: DISPLAY=$DISPLAY ${WIDTH}x${HEIGHT} vnc=$VNC_PORT novnc=$NOVNC_PORT"
+SCRIPT
+    chmod 0755 /opt/desktop-env/bin/start-desktop
+
+    # tint2 with no config writes one into $HOME, which is read-only here.
+    printf 'panel_items = TSC\ntaskbar_mode = single_desktop\n' \
+        > /opt/desktop-env/tint2rc
+
+%environment
+    export DISPLAY_NUM=1
+    export DISPLAY=":${DISPLAY_NUM}"
+    export WIDTH=1920
+    export HEIGHT=1080
+    export VNC_PORT=5900
+    export NOVNC_PORT=6080
+    export PATH=/opt/desktop-env/bin:$PATH
+    # pyautogui refuses to import without a writable temp dir for its screenshot
+    # backend; /tmp is tmpfs inside an instance, which is enough.
+    export XDG_RUNTIME_DIR=/tmp/runtime
+    export HOME=/tmp/home
+    # ... and the two directories are created HERE, not only in %startscript /
+    # %runscript, because `apptainer exec` runs neither of those -- and `exec` is
+    # exactly how the README says to drive this tier, since it has no in-guest HTTP
+    # agent.  Pointing HOME at a path that does not exist made the documented
+    # invocation fail on pyautogui's import.  /tmp is a fresh tmpfs per instance, so
+    # creating them in %post would not have survived to run time either.
+    mkdir -p /tmp/home /tmp/runtime 2>/dev/null || true
+
+%startscript
+    mkdir -p /tmp/home /tmp/runtime
+    exec /opt/desktop-env/bin/start-desktop
+
+%runscript
+    mkdir -p /tmp/home /tmp/runtime
+    /opt/desktop-env/bin/start-desktop
+    exec "$@"
+
+%test
+    # Deliberately weak: %test runs at build time with no instance, so it can only
+    # check that the binaries this tier depends on are present.
+    for binary in Xvfb xdotool x11vnc mutter tint2 scrot python3 xvfb-run; do
+        command -v "$binary" >/dev/null || { echo "missing $binary"; exit 1; }
+    done
+    # `import pyautogui` is NOT display-free: its X11 backend opens
+    # os.environ['DISPLAY'] at import time, so a bare `python3 -c "import
+    # pyautogui"` ALWAYS failed here and this whole %test -- and therefore the
+    # whole build -- exited 1. Xvfb is installed, so give the import the display it
+    # requires instead of weakening the check: this now proves the real import path
+    # works, which is the one thing about this tier worth asserting at build time.
+    xvfb-run -a python3 -c "import Xlib, pyautogui" >/dev/null 2>&1 \
+        || { echo "pyautogui/python-xlib import failed under xvfb-run"; exit 1; }
+    echo "non-kvm desktop tier: binaries present"

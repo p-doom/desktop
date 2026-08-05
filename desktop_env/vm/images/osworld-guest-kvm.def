@@ -1,0 +1,68 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# =========================================================================== #
+# THE KVM TIER'S HOST-SIDE CONTAINER.
+#
+# This container does NOT contain a desktop.  It contains QEMU and the tools
+# `desktop_env.vm.qemu` shells out to; the desktop lives inside the guest qcow2
+# image that QEMU boots, and that image is an input, not a layer.
+#
+# The separation is the point.  The guest image is the thing that determines
+# benchmark parity -- its application versions, its in-VM agent, its display
+# geometry -- so it must be a pinned artifact that a rebuild of this container
+# cannot alter.  Baking a desktop in here would mean every container rebuild
+# silently changed what a benchmark number means.
+#
+# REQUIREMENTS AT RUN TIME (not build time):
+#   * /dev/kvm readable and writable by the invoking user.  Without it,
+#     QemuRuntime falls back to `-accel tcg`, which works and is ~10x slower and
+#     is NOT valid for any timing or parity measurement.
+#   * a bind mount for the guest qcow2 (read-only is fine and preferable: the VM
+#     boots with `snapshot=on`, so it never writes the backing file).
+#   * a bind mount for a writable scratch directory, and TMPDIR pointing at it,
+#     so QEMU's unlinked overlay is freed with the allocation.
+#
+# Run with, roughly:
+#   apptainer exec --bind /path/to/images:/images:ro --bind "$SCRATCH":/scratch \
+#       --env TMPDIR=/scratch osworld-guest-kvm.sif <your command>
+# No --fakeroot and no privileged flags: QEMU with KVM needs only the device.
+# =========================================================================== #
+
+%labels
+    Purpose  kvm-tier-host-container
+    Parity   full (determined by the guest image, not by this container)
+    Contains qemu-system-x86_64 + qemu-img
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    # NOTE: the PACKAGE is `qemu-system-x86`; the BINARY it ships is
+    # `qemu-system-x86_64`.  Naming the package after the binary is an
+    # `Unable to locate package` failure, which is what this line used to do.
+    apt-get -y install --no-install-recommends \
+        qemu-system-x86 \
+        qemu-utils \
+        seabios \
+        ipxe-qemu \
+        ca-certificates \
+        python3 \
+        netcat-openbsd \
+        procps
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%environment
+    # QMP sockets are AF_UNIX: the path caps at 108 bytes, so it must NOT default
+    # to a deep scratch path.  QemuRuntime picks /tmp on its own, but making the
+    # intent explicit here keeps a caller from overriding it to something long.
+    export DESKTOP_ENV_QMP_DIR=/tmp
+
+%test
+    command -v qemu-system-x86_64 >/dev/null || { echo "missing qemu"; exit 1; }
+    command -v qemu-img >/dev/null || { echo "missing qemu-img"; exit 1; }
+    # A build-time %test cannot see /dev/kvm, so the accelerator is checked at run
+    # time by QemuRuntime instead of being asserted here.
+    qemu-system-x86_64 -accel help >/dev/null 2>&1 \
+        || { echo "qemu cannot enumerate accelerators"; exit 1; }
+    echo "kvm tier host container: qemu present"

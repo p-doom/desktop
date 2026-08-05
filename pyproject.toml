@@ -1,0 +1,73 @@
+[project]
+name = "desktop-env"
+version = "0.1.0"
+description = "Apply absolute-pixel input operations to a real desktop VM, and reset it. Grammar-free, stdlib-only."
+requires-python = ">=3.12"
+
+# EXACTLY ONE RUNTIME DEPENDENCY, AND THE BAR FOR ADDING A SECOND IS HIGH.
+#
+# The constraint exists because this package's callers are training and eval
+# stacks with large, mutually incompatible dependency graphs (JAX pins, torch
+# pins, CUDA pins, vLLM pins). A VM layer that pins broadly becomes a resolver
+# conflict at the worst possible moment, and the failure looks like a training
+# bug. HTTP is therefore urllib.request, and screenshots cross every boundary in
+# this package as raw bytes.
+#
+# Pillow clears the bar on three counts: it does one thing, its correctness
+# criterion is external to us (it decodes an image the way every other tool does,
+# or it is visibly broken), and its import floor is small. It is used in exactly
+# one place -- desktop_env/vm/readiness.py -- to downsample a screenshot and
+# measure it. The alternative was a hand-written PNG decoder, and that was
+# rejected because a decoder bug is SILENT: it makes readiness report "not
+# ready", which is indistinguishable from a slow VM. Owning a failure mode that
+# mimics infrastructure slowness is worse than owning this dependency.
+#
+# Two external BINARIES are also assumed, deliberately, because they are not
+# Python and cannot be vendored: qemu-system-x86_64 and apptainer.
+dependencies = ["pillow>=10"]
+
+[project.optional-dependencies]
+# Test-only. Nothing here may be imported by desktop_env/ itself.
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["desktop_env*"]
+
+[tool.setuptools.package-data]
+"desktop_env.vm.images" = ["*.def", "*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The pool does its startup, retirement and reaping on daemon threads, so an
+# exception there is invisible: the thread dies, the pool's own error counters
+# never learn, and a leaked VM looks like a healthy one. An escaping thread
+# exception is a test failure here, not a warning.
+filterwarnings = [
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
+# A test that needs KVM is not a unit test. Mark it, so the default run is the
+# set that passes on any node.
+markers = [
+    "kvm: requires a readable and writable /dev/kvm",
+    "apptainer: requires the apptainer binary",
+    "guest: requires a live guest agent",
+    # A node may have /dev/kvm and still have no qemu binary -- on this cluster
+    # qemu exists only inside the KVM-tier container -- so the binary is its own
+    # gate, read from DESKTOP_ENV_QEMU_BIN / DESKTOP_ENV_QEMU_IMG_BIN.
+    "needs_vm: requires a real qemu-img / qemu-system-x86_64 binary",
+    "needs_build: requires a built .sif, via DESKTOP_ENV_TEST_SIF",
+    # The two tiers are different images; a test for one says nothing about the
+    # other, which is the point of the split.
+    "needs_nonkvm_build: requires a built non-KVM .sif, via DESKTOP_ENV_TEST_NONKVM_SIF",
+]
+
+[tool.ruff]
+line-length = 96
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

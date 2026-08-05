@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.venv/
+# Built images and VM artifacts are inputs or outputs, never sources.
+*.sif
+*.qcow2

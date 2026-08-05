@@ -1,0 +1,265 @@
+"""Constructor-side entry points: plain functions, explicit config.
+
+This closes the gap that opened when the provider monkeypatch was refused.
+Previously a harness obtained a desktop by *naming* one -- ``provider_name=
+"docker"`` resolving, via a factory that had been rewritten at import time, to a
+local-QEMU provider.  That indirection is what produced the outage recorded in
+``qemu.py``'s header: a re-clone of the third-party tree removed the patch, the
+name then resolved to something else, and every dependent job failed in a way
+that looked like a model regression.
+
+So there is deliberately:
+
+* **no name registry** -- nothing maps a string like ``"qemu"`` or ``"docker"`` to
+  an implementation.  You pass an image path and get a runtime.
+* **no plugin lookup** -- no entry points, no ``importlib`` by path, no scanning.
+* **no import-time side effects** -- importing this module changes nothing
+  anywhere.  Every function here only ever constructs and returns objects.
+
+Configuration is explicit arguments first.  Environment variables are a *named
+fallback* for the values a scheduler legitimately owns, and each one is listed in
+``ENVIRONMENT`` below so a caller can discover them without reading the code.
+Nothing falls back to a site-specific default path: a missing image is an error,
+because a factory that guesses an image is a factory that silently benchmarks the
+wrong guest.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Callable
+
+from .pool import DesktopPoolConfig, DesktopSessionPool, PortLease
+from .qemu import BASE_CHECKPOINT, QemuRuntime
+from .runtime import GuestPorts
+from .session import DesktopSession
+
+#: Environment variables read as fallbacks, and what each supplies.  An explicit
+#: argument always wins; nothing here is consulted if one is passed.
+ENVIRONMENT: dict[str, str] = {
+    "DESKTOP_ENV_IMAGE": "guest qcow2 path (fallback for `image`)",
+    "DESKTOP_ENV_QEMU_BIN": "qemu-system-x86_64 path or name",
+    "DESKTOP_ENV_QEMU_IMG_BIN": "qemu-img path or name",
+    "DESKTOP_ENV_VM_SMP": "vCPU count",
+    "DESKTOP_ENV_VM_MEM": "guest memory, e.g. 8G",
+    "DESKTOP_ENV_VM_LOG_DIR": "directory for QEMU stdout/serial logs",
+    "DESKTOP_ENV_QMP_DIR": "directory for the QMP unix socket (must be short)",
+    "DESKTOP_ENV_ACCEL": "force 'kvm' or 'tcg'; otherwise detected",
+    # Read by ``pool.allocate_worker_ports``, not by anything in this module, but
+    # listed here because this table is the package's one discoverable index of
+    # what the environment can change.
+    "DESKTOP_ENV_PORT_BASE": (
+        "pool port-block base, 1024..65535, must be aligned to the port stride; "
+        "otherwise derived from SLURM_JOB_ID"
+    ),
+}
+
+
+class ConfigError(ValueError):
+    """A runtime cannot be constructed from the configuration given."""
+
+
+def _env(name: str) -> str | None:
+    value = os.environ.get(name)
+    return value if value else None
+
+
+def _resolve_image(image: Path | str | None) -> Path:
+    raw = image if image is not None else _env("DESKTOP_ENV_IMAGE")
+    if not raw:
+        raise ConfigError(
+            "no guest image: pass image=..., or set DESKTOP_ENV_IMAGE. There is "
+            "deliberately no default -- guessing an image would silently "
+            "benchmark the wrong guest."
+        )
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise ConfigError(f"guest image does not exist: {path}")
+    return path.resolve()
+
+
+def build_qemu_runtime(
+    *,
+    image: Path | str | None = None,
+    qemu_binary: Path | str | None = None,
+    qemu_img_binary: Path | str | None = None,
+    smp: int | None = None,
+    memory: str | None = None,
+    log_dir: Path | str | None = None,
+    qmp_dir: Path | str | None = None,
+    overlay_dir: Path | str | None = None,
+    accelerator: str | None = None,
+    ports: GuestPorts | None = None,
+    base_checkpoint: str = BASE_CHECKPOINT,
+    runtime_id: str | None = None,
+    boot_timeout_s: float = 300.0,
+    restore_timeout_s: float = 120.0,
+) -> QemuRuntime:
+    """Construct one ``QemuRuntime`` from explicit config plus named fallbacks.
+
+    ``accelerator`` left as ``None`` means detect: KVM when ``/dev/kvm`` is usable,
+    otherwise TCG with a warning.  Passing ``"kvm"`` explicitly does NOT assert
+    that KVM exists -- ``QemuRuntime.start`` will simply fail on a node without
+    it, which is the honest outcome for a caller that demanded acceleration.
+    """
+    resolved_accelerator = accelerator or _env("DESKTOP_ENV_ACCEL")
+    if resolved_accelerator is not None and resolved_accelerator not in {"kvm", "tcg"}:
+        raise ConfigError(
+            f"accelerator must be 'kvm' or 'tcg', got {resolved_accelerator!r}"
+        )
+    raw_smp = smp if smp is not None else _env("DESKTOP_ENV_VM_SMP")
+    try:
+        cpu_count = int(raw_smp) if raw_smp is not None else 4
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"smp must be an integer, got {raw_smp!r}") from exc
+    if cpu_count < 1:
+        raise ConfigError(f"smp must be at least 1, got {cpu_count}")
+    return QemuRuntime(
+        image=_resolve_image(image),
+        qemu_binary=(
+            qemu_binary or _env("DESKTOP_ENV_QEMU_BIN") or "qemu-system-x86_64"
+        ),
+        qemu_img_binary=(
+            qemu_img_binary or _env("DESKTOP_ENV_QEMU_IMG_BIN") or "qemu-img"
+        ),
+        smp=cpu_count,
+        memory=memory or _env("DESKTOP_ENV_VM_MEM") or "8G",
+        log_dir=Path(log_dir) if log_dir else _optional_path("DESKTOP_ENV_VM_LOG_DIR"),
+        qmp_dir=Path(qmp_dir) if qmp_dir else _optional_path("DESKTOP_ENV_QMP_DIR"),
+        overlay_dir=Path(overlay_dir) if overlay_dir else None,
+        accelerator=resolved_accelerator,
+        ports=ports,
+        base_checkpoint=base_checkpoint,
+        runtime_id=runtime_id,
+        boot_timeout_s=boot_timeout_s,
+        restore_timeout_s=restore_timeout_s,
+    )
+
+
+def _optional_path(variable: str) -> Path | None:
+    raw = _env(variable)
+    return Path(raw) if raw else None
+
+
+def build_desktop_session(
+    *,
+    image: Path | str | None = None,
+    scratch_root: Path | str | None = None,
+    metadata_path: Path | str | None = None,
+    session_id: str | None = None,
+    require_single_task: bool = True,
+    forbid_gpu_visibility: bool = False,
+    transport_timeout_s: float = 30.0,
+    ports: GuestPorts | None = None,
+    **runtime_options: Any,
+) -> DesktopSession:
+    """A ``DesktopSession`` over a fresh ``QemuRuntime``.  Not started.
+
+    Returned unstarted on purpose: ``start()`` acquires the per-task lock, makes
+    the scratch directory, and boots, and a caller usually wants that inside its
+    own ``with`` block or error handling rather than inside a constructor.
+    """
+    runtime = build_qemu_runtime(image=image, ports=ports, **runtime_options)
+    return DesktopSession(
+        runtime,
+        scratch_root=Path(scratch_root) if scratch_root else None,
+        metadata_path=Path(metadata_path) if metadata_path else None,
+        session_id=session_id,
+        require_single_task=require_single_task,
+        forbid_gpu_visibility=forbid_gpu_visibility,
+        transport_timeout_s=transport_timeout_s,
+    )
+
+
+def qemu_session_factory(
+    *,
+    image: Path | str | None = None,
+    require_single_task: bool = False,
+    transport_timeout_s: float = 30.0,
+    **runtime_options: Any,
+) -> Callable[[PortLease], DesktopSession]:
+    """A ``session_factory`` for ``DesktopSessionPool``, bound to one image.
+
+    Two couplings here are load-bearing and easy to get wrong separately:
+
+    1. **The lease's ports are pinned into the runtime.**  The pool holds an
+       ``flock`` on a port block for the lease's lifetime; if the runtime then
+       allocated its own with ``bind(0)``, the lock would guard four ports nothing
+       listens on while QEMU bound four unrelated ones, and two pooled sessions
+       could still collide.  Passing ``lease.ports`` through is what makes the
+       lease mean something.
+    2. **``require_single_task`` defaults to False here** -- but NOT for the reason
+       this docstring used to give, and the difference matters to anyone reasoning
+       about pool isolation.
+
+       What the flag actually controls is one thing only: whether a
+       ``SLURM_NTASKS`` other than ``"1"`` is rejected.  It does **not** gate the
+       session's one-VM-per-task ``flock``, which ``_prepare_isolation`` takes
+       unconditionally.  So ``True`` would NOT make the second pooled session fail
+       to start -- verified -- and ``False`` does not disable the lock.
+
+       What actually lets several pooled desktops coexist in one process is
+       coupling 3 below: each lease has its own ``workdir``, the task lock lives
+       *inside* the session's scratch root, so two pooled sessions never contend
+       for it at either setting of the flag.  Hand a pool an explicit shared
+       ``scratch_root`` and the second session fails regardless.
+
+       ``False`` is still the right default here, because a pool process
+       legitimately runs under ``SLURM_NTASKS > 1``.
+
+    3. **The lease's ``workdir`` becomes the session's scratch root**, so a retired
+       session's scratch is released with its lease -- and, per coupling 2, this is
+       the mechanism that keeps pooled sessions from colliding on the task lock.
+    """
+
+    def factory(lease: PortLease) -> DesktopSession:
+        session = build_desktop_session(
+            image=image,
+            scratch_root=lease.workdir,
+            metadata_path=lease.workdir / "session.json",
+            require_single_task=require_single_task,
+            transport_timeout_s=transport_timeout_s,
+            ports=GuestPorts(
+                server=lease.ports.server,
+                chromium=lease.ports.chromium,
+                vnc=lease.ports.vnc,
+                vlc=lease.ports.vlc,
+            ),
+            log_dir=lease.logdir or lease.workdir,
+            **runtime_options,
+        )
+        session.start()
+        return session
+
+    return factory
+
+
+def build_desktop_pool(
+    *,
+    root_dir: Path | str,
+    image: Path | str | None = None,
+    config: DesktopPoolConfig | None = None,
+    worker_name: str | None = None,
+    **runtime_options: Any,
+) -> DesktopSessionPool[DesktopSession]:
+    """A pool of QEMU-backed sessions.  Not started.
+
+    ``DesktopSessionPool.start()`` begins prewarming; until then nothing boots.
+    """
+    return DesktopSessionPool(
+        config=config or DesktopPoolConfig(),
+        root_dir=Path(root_dir),
+        session_factory=qemu_session_factory(image=image, **runtime_options),
+        worker_name=worker_name,
+    )
+
+
+__all__ = [
+    "ENVIRONMENT",
+    "ConfigError",
+    "build_desktop_pool",
+    "build_desktop_session",
+    "build_qemu_runtime",
+    "qemu_session_factory",
+]
