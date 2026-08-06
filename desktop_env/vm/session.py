@@ -53,7 +53,6 @@ import secrets
 import shutil
 import signal
 import socket
-import subprocess
 import sys
 import tempfile
 import time
@@ -793,9 +792,3 @@ __all__ = [
     "task_unique_session_id",
     "write_json_atomic",
 ]
-
-
-# Referenced by ``_write_metadata`` consumers that want a subprocess handle's
-# group without importing subprocess themselves.
-def process_group_of_popen(process: subprocess.Popen) -> int | None:
-    return process_group_of(process.pid)

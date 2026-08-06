@@ -194,9 +194,6 @@ class SandboxExecResult:
     error_type: str | None = None
 
 
-ExecResult = SandboxExecResult
-
-
 class SandboxCreateError(RuntimeError):
     """Raised when a provider cannot create a sandbox."""
 

@@ -40,7 +40,7 @@ from .guest_program import (
     lower_guest_operations,
     pointer_mask_for_buttons,
 )
-from .keymap import guest_button, guest_key, key_chord as key_chord_operations
+from .keymap import guest_button, guest_key
 
 
 class GuiTransport(Protocol):
@@ -682,5 +682,4 @@ __all__ = [
     "GuiTransport",
     "HttpGuiTransport",
     "RecordingTransport",
-    "key_chord_operations",
 ]
