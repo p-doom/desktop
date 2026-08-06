@@ -31,13 +31,15 @@ from env_fleet.supervise import (
     osworld_qcow_path,
     osworld_root,
     owned_process_group_ids,
+    parse_fleet_args,
+    parse_prepare_args,
     parse_sbatch_job_id,
     read_pool_health,
     registry_metadata,
+    resolve_prepare_layout,
     restart_reason,
     safe_process_group_ids,
 )
-from env_fleet.supervise import parse_fleet_args, parse_prepare_args
 
 
 @pytest.fixture(autouse=True)
@@ -120,6 +122,42 @@ def test_prepare_uses_runtime_paths(monkeypatch, tmp_path):
     assert args.desktop_pool_runtime_dir == tmp_path / "runtime" / "pool"
     assert args.desktop_pool_startup_timeout == 840.0
     assert args.desktop_pool_log_runtime_dir == tmp_path / "log"
+
+
+def test_prepare_run_id_override_moves_every_sub_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", ["env-fleet", "prepare"])
+    monkeypatch.setenv("OSWORLD_RUN_BASE", str(tmp_path))
+    monkeypatch.setenv("OSWORLD_FLEET_RUN_ID", "run-a")
+    for name in (
+        "OSWORLD_FLEET_RUN_ROOT",
+        "OSWORLD_ENV_FLEET_REGISTRY",
+        "OSWORLD_DESKTOP_POOL_ROOT",
+        "OSWORLD_DESKTOP_POOL_STATUS_DIR",
+        "OSWORLD_FLEET_LOGS_DIR",
+        "OSWORLD_FLEET_CONFIGS_DIR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    layout = resolve_prepare_layout(parse_prepare_args(["--run-id", "run-b"]))
+
+    assert layout.run_id == "run-b"
+    assert layout.run_root == tmp_path / "run-b" / "env_fleet"
+    assert layout.registry_path == layout.run_root / "env_registry.json"
+    assert layout.logs_dir == layout.run_root / "logs"
+    assert layout.configs_dir == layout.run_root / "configs"
+    assert layout.pool_root == tmp_path / "run-b" / "pool"
+    assert layout.pool_status_dir == layout.pool_root / "status"
+
+
+def test_prepare_honors_explicit_pool_status_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", ["env-fleet", "prepare"])
+    monkeypatch.setenv("OSWORLD_RUN_BASE", str(tmp_path))
+    monkeypatch.setenv("OSWORLD_FLEET_RUN_ID", "run-a")
+    monkeypatch.setenv("OSWORLD_DESKTOP_POOL_STATUS_DIR", str(tmp_path / "shared"))
+
+    layout = resolve_prepare_layout(parse_prepare_args([]))
+
+    assert layout.pool_status_dir == tmp_path / "shared"
 
 
 def test_prepare_registry_metadata_includes_layout(tmp_path):

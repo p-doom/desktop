@@ -59,6 +59,7 @@ from env_fleet.slurm import (
 from env_fleet.spec import (
     FleetRunLayout,
     default_public_host,
+    env_path,
     load_runtime_env_file,
     make_server_specs,
     parse_consumer_paths,
@@ -346,12 +347,30 @@ def parse_prepare_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Prepare verifiers env-server configs for a CPU desktop fleet."
     )
+    # Sub-path defaults are the *explicit* environment overrides only, never the
+    # values from_env() derived from the environment's run id. Taking the derived
+    # ones would pin every sub-path to the environment's run while --run-id named
+    # a different one, so `prepare --run-id NEW` wrote NEW's registry, configs and
+    # logs into OLD's directories.
     parser.add_argument("--run-id", default=layout.run_id)
     parser.add_argument("--run-base", type=Path, default=layout.run_base)
-    parser.add_argument("--run-root", type=Path, default=layout.run_root)
-    parser.add_argument("--registry", type=Path, default=layout.registry_path)
-    parser.add_argument("--configs-dir", type=Path, default=layout.configs_dir)
-    parser.add_argument("--logs-dir", type=Path, default=layout.logs_dir)
+    parser.add_argument(
+        "--run-root", type=Path, default=env_path(env, "OSWORLD_FLEET_RUN_ROOT")
+    )
+    parser.add_argument(
+        "--registry", type=Path, default=env_path(env, "OSWORLD_ENV_FLEET_REGISTRY")
+    )
+    parser.add_argument(
+        "--configs-dir", type=Path, default=env_path(env, "OSWORLD_FLEET_CONFIGS_DIR")
+    )
+    parser.add_argument(
+        "--logs-dir", type=Path, default=env_path(env, "OSWORLD_FLEET_LOGS_DIR")
+    )
+    parser.add_argument(
+        "--pool-status-dir",
+        type=Path,
+        default=env_path(env, "OSWORLD_DESKTOP_POOL_STATUS_DIR"),
+    )
     parser.add_argument(
         "--consumer-path",
         action="append",
@@ -363,7 +382,11 @@ def parse_prepare_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--host", default=env.get("OSWORLD_FLEET_HOST") or default_public_host()
     )
     add_options(parser, PREPARE_OPTIONS, env)
-    parser.add_argument("--desktop-pool-root", type=Path, default=layout.pool_root)
+    parser.add_argument(
+        "--desktop-pool-root",
+        type=Path,
+        default=env_path(env, "OSWORLD_DESKTOP_POOL_ROOT"),
+    )
     parser.add_argument("--osworld-root", type=Path, default=osworld_root(env=env))
     parser.add_argument("--qcow-path", type=Path, default=osworld_qcow_path(env=env))
     parser.add_argument(
@@ -386,9 +409,10 @@ def resolve_prepare_layout(args: argparse.Namespace) -> FleetRunLayout:
         run_root=args.run_root,
         registry_path=args.registry,
         pool_root=args.desktop_pool_root,
+        pool_status_dir=args.pool_status_dir,
         logs_dir=args.logs_dir,
         configs_dir=args.configs_dir,
-        consumer_paths=vars(args).get("consumer_paths"),
+        consumer_paths=args.consumer_paths,
     )
 
 
