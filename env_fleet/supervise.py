@@ -159,8 +159,10 @@ def env_value(
         return default
     try:
         return kind(raw)
-    except (TypeError, ValueError):
-        return default
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{name}={raw!r} is not a valid {kind.__name__}: {exc}"
+        ) from exc
 
 
 def env_bool(env: Mapping[str, str], key: str, default: bool) -> bool:

@@ -314,12 +314,15 @@ def resolve_status_dir(
 
 
 def int_metadata(metadata: Mapping[str, Any], key: str, *, default: int) -> int:
-    """Read an integer metadata value while tolerating malformed entries."""
-    value = metadata.get(key, default)
+    if key not in metadata:
+        return default
+    value = metadata[key]
     try:
         return int(value)
-    except (TypeError, ValueError):
-        return default
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"registry metadata {key!r} is not an integer: {value!r}"
+        ) from exc
 
 
 def sum_int_field(statuses: Sequence[Mapping[str, Any]], field: str) -> int:

@@ -824,6 +824,28 @@ def wait_for_registry_gateway(args: argparse.Namespace) -> dict[str, Any]:
         )
         bind_address = args.bind_address or gateway_bind_address(metadata)
         if bind_address and backend_addresses and len(registry.servers) >= expected:
+            # A backend with no status dir reports capacity_ready unconditionally,
+            # so the broker would route to it without ever reading its pool -- the
+            # one thing this broker exists to do. Every node has registered by
+            # here, so an unmatched address means the gateway's backend_addresses
+            # (built from slurm_node_addrs on rank 0) and server.public_address
+            # (built from scontrol NodeAddr on each node) disagree about a host
+            # string, and the exact-match join in gateway_backend_status_dirs
+            # silently missed.
+            unmatched = [
+                address
+                for address, status_dir in zip(
+                    backend_addresses, backend_status_dirs, strict=True
+                )
+                if status_dir is None
+            ]
+            if unmatched:
+                raise ValueError(
+                    f"no registered env server publishes {unmatched}; the gateway "
+                    "cannot read their desktop-pool capacity and would route to "
+                    "them blind. Registered addresses: "
+                    f"{[server.public_address for server in registry.servers]}"
+                )
             return {
                 "bind_address": bind_address,
                 "backend_addresses": backend_addresses,
