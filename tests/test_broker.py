@@ -100,10 +100,13 @@ def test_broker_resolves_cross_node_backends_from_registry_gateway_metadata(tmp_
 
 
 def test_backend_capacity_rank_prefers_a_free_leased_machine():
-    free = GatewayBackend(index=0, address="tcp://node001:5200", ready_sessions=2)
+    free = GatewayBackend(
+        index=0, address="tcp://node001:5200", status_dir="/status/0", ready_sessions=2
+    )
     reserved = GatewayBackend(
         index=1,
         address="tcp://node002:5200",
+        status_dir="/status/1",
         ready_sessions=2,
         reserved_ready_sessions=2,
     )
@@ -126,10 +129,18 @@ def run(coro):
     return asyncio.run(coro)
 
 
+# A gateway backend's status_dir is required (see broker.py: a backend with no
+# status dir would report capacity_ready unconditionally). Tests that don't care
+# about a given backend's capacity point it at a directory that never exists;
+# read_statuses() treats a missing directory as "no status files", same as the
+# old None-placeholder used to.
+UNUSED_STATUS_DIR = "/nonexistent/env-fleet-test-status-dir"
+
+
 def gateway_with_fake_sockets(
     *,
     request_ids: list[bytes] | None = None,
-    backend_status_dirs: list[str | None] | None = None,
+    backend_status_dirs: list[str] | None = None,
     status_stale_after_s: float = 120.0,
 ) -> ZMQRolloutGateway:
     ids = iter(request_ids or [b"backend-request"])
@@ -139,7 +150,8 @@ def gateway_with_fake_sockets(
             "tcp://127.0.0.1:5200",
             "tcp://127.0.0.1:5201",
         ],
-        backend_status_dirs=backend_status_dirs,
+        backend_status_dirs=backend_status_dirs
+        or [UNUSED_STATUS_DIR, UNUSED_STATUS_DIR],
         status_stale_after_s=status_stale_after_s,
         request_id_factory=lambda: next(ids),
     )
@@ -254,7 +266,9 @@ def test_gateway_health_uses_liveness_not_spare_capacity(tmp_path):
         ),
         encoding="utf-8",
     )
-    gateway = gateway_with_fake_sockets(backend_status_dirs=[str(status_dir), None])
+    gateway = gateway_with_fake_sockets(
+        backend_status_dirs=[str(status_dir), UNUSED_STATUS_DIR]
+    )
     backend = gateway.backends[0]
     backend.healthy = True
 
@@ -417,7 +431,9 @@ def test_gateway_repeated_drain_does_not_oversend_stale_ready_slot(tmp_path):
 def test_gateway_times_out_queued_request_waiting_for_capacity(tmp_path):
     status_dir = tmp_path / "busy"
     write_pool_status(status_dir, ready=0, leased=1)
-    gateway = gateway_with_fake_sockets(backend_status_dirs=[str(status_dir), None])
+    gateway = gateway_with_fake_sockets(
+        backend_status_dirs=[str(status_dir), UNUSED_STATUS_DIR]
+    )
     gateway.capacity_wait_timeout_s = 1.0
     backend = gateway.backends[0]
     backend.healthy = True
@@ -443,7 +459,9 @@ def test_gateway_times_out_queued_request_waiting_for_capacity(tmp_path):
 def test_gateway_rejects_request_when_pending_queue_is_full(tmp_path):
     status_dir = tmp_path / "busy"
     write_pool_status(status_dir, ready=0, leased=1)
-    gateway = gateway_with_fake_sockets(backend_status_dirs=[str(status_dir), None])
+    gateway = gateway_with_fake_sockets(
+        backend_status_dirs=[str(status_dir), UNUSED_STATUS_DIR]
+    )
     gateway.max_pending_requests = 1
     backend = gateway.backends[0]
     backend.healthy = True
@@ -579,7 +597,9 @@ def test_gateway_ignores_stale_pool_status_capacity(tmp_path):
         ),
         encoding="utf-8",
     )
-    gateway = gateway_with_fake_sockets(backend_status_dirs=[str(status_dir), None])
+    gateway = gateway_with_fake_sockets(
+        backend_status_dirs=[str(status_dir), UNUSED_STATUS_DIR]
+    )
     backend = gateway.backends[0]
     backend.healthy = True
     backend.created_at = time.monotonic() - 1000.0
@@ -593,7 +613,9 @@ def test_gateway_ignores_stale_pool_status_capacity(tmp_path):
 def test_gateway_waits_for_ready_status_before_routing(tmp_path):
     status_dir = tmp_path / "warming"
     status_dir.mkdir()
-    gateway = gateway_with_fake_sockets(backend_status_dirs=[str(status_dir), None])
+    gateway = gateway_with_fake_sockets(
+        backend_status_dirs=[str(status_dir), UNUSED_STATUS_DIR]
+    )
     backend = gateway.backends[0]
     backend.healthy = True
     now = time.monotonic()
@@ -620,7 +642,9 @@ def test_gateway_does_not_count_starting_as_routable_capacity(tmp_path):
         ),
         encoding="utf-8",
     )
-    gateway = gateway_with_fake_sockets(backend_status_dirs=[str(status_dir), None])
+    gateway = gateway_with_fake_sockets(
+        backend_status_dirs=[str(status_dir), UNUSED_STATUS_DIR]
+    )
     backend = gateway.backends[0]
     backend.healthy = True
     now = time.monotonic()

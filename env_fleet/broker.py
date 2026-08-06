@@ -71,7 +71,7 @@ LOG_LEVELS = {
 class GatewayBackend:
     index: int
     address: str
-    status_dir: str | None = None
+    status_dir: str
     socket: Any | None = None
     healthy: bool = False
     capacity_ready: bool = True
@@ -119,9 +119,9 @@ class ZMQRolloutGateway:
         *,
         bind_address: str,
         backend_addresses: list[str],
+        backend_status_dirs: list[str],
         health_check_interval: float = 2.0,
         health_check_timeout: float = 5.0,
-        backend_status_dirs: list[str | None] | None = None,
         request_timeout_s: float = 900.0,
         backend_quarantine_s: float = 30.0,
         capacity_check_interval: float = 5.0,
@@ -132,14 +132,15 @@ class ZMQRolloutGateway:
     ) -> None:
         if not backend_addresses:
             raise ValueError("backend_addresses must not be empty")
-        if backend_status_dirs is not None and len(backend_status_dirs) != len(
-            backend_addresses
-        ):
+        if len(backend_status_dirs) != len(backend_addresses):
             raise ValueError("backend_status_dirs must match backend_addresses")
+        if not all(backend_status_dirs):
+            raise ValueError("backend_status_dirs entries must not be empty")
         self.bind_address = bind_address
-        status_dirs = backend_status_dirs or [None] * len(backend_addresses)
         self.backends = [
-            GatewayBackend(index=index, address=address, status_dir=status_dirs[index])
+            GatewayBackend(
+                index=index, address=address, status_dir=backend_status_dirs[index]
+            )
             for index, address in enumerate(backend_addresses)
         ]
         self.health_check_interval = health_check_interval
@@ -586,16 +587,12 @@ class ZMQRolloutGateway:
         force: bool = False,
     ) -> None:
         """Refresh desktop-pool capacity from the backend status directory."""
+        assert backend.status_dir, (
+            "GatewayBackend.status_dir is required (enforced in "
+            "ZMQRolloutGateway.__init__); a gateway backend with no status dir "
+            "would report capacity_ready unconditionally and route to it blind"
+        )
         current = time.monotonic() if now is None else now
-        if backend.status_dir is None or self.capacity_check_interval <= 0:
-            backend.capacity_ready = True
-            backend.ready_sessions = 0
-            backend.leased_sessions = 0
-            backend.starting_sessions = 0
-            backend.stale_status_files = 0
-            backend.reserved_ready_sessions = 0
-            backend.last_capacity_error = None
-            return
         if (
             not force
             and current - backend.last_capacity_check_at < self.capacity_check_interval
@@ -652,8 +649,10 @@ class ZMQRolloutGateway:
 
     def reserve_backend_capacity(self, backend: GatewayBackend) -> bool:
         """Reserve one observed ready desktop slot after routing a request."""
-        if backend.status_dir is None or self.capacity_check_interval <= 0:
-            return False
+        assert backend.status_dir, (
+            "GatewayBackend.status_dir is required (enforced in "
+            "ZMQRolloutGateway.__init__)"
+        )
         if available_ready_sessions(backend) <= 0:
             return False
         backend.reserved_ready_sessions = min(
@@ -742,7 +741,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gateway = ZMQRolloutGateway(
         bind_address=config["bind_address"],
         backend_addresses=config["backend_addresses"],
-        backend_status_dirs=config.get("backend_status_dirs"),
+        backend_status_dirs=config["backend_status_dirs"],
         **{name: getattr(args, name) for name in GATEWAY_TUNABLES},
     )
     asyncio.run(gateway.serve())
