@@ -367,11 +367,6 @@ def max_float_field(statuses: Sequence[Mapping[str, Any]], field: str) -> float:
     return max_value
 
 
-# --------------------------------------------------------------------------
-# CLI: block until the fleet has enough warm capacity
-# --------------------------------------------------------------------------
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """Poll fleet registry and pool status files until readiness is reached."""
     args = parse_args(argv)

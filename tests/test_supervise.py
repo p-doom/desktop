@@ -47,11 +47,6 @@ def disable_runtime_env_file(monkeypatch):
     monkeypatch.setenv("RL_RUNTIME_ENV_FILE", "")
 
 
-# --------------------------------------------------------------------------
-# prepare
-# --------------------------------------------------------------------------
-
-
 def test_prepare_harness_config_includes_desktop_pool(tmp_path):
     args = SimpleNamespace(
         max_steps=4,
@@ -234,11 +229,6 @@ def test_prepare_registry_metadata_includes_layout(tmp_path):
     assert metadata["expected_ready_sessions"] == 24
 
 
-# --------------------------------------------------------------------------
-# supervisor restart policy
-# --------------------------------------------------------------------------
-
-
 def _replica(tmp_path) -> ReplicaRuntime:
     return ReplicaRuntime(
         name="osworld-0000",
@@ -383,11 +373,6 @@ def test_owned_process_group_ids_reads_sessions_and_starting_pidfiles(tmp_path):
 
 def test_safe_process_group_ids_skip_supervisor_group():
     assert safe_process_group_ids((os.getpgrp(), 123456789, 123456789)) == (123456789,)
-
-
-# --------------------------------------------------------------------------
-# FleetSupervisor run loop -- stubbed subprocess layer, no live Slurm
-# --------------------------------------------------------------------------
 
 
 class _FakeProcess:
@@ -692,11 +677,6 @@ def test_supervisor_reaps_gateway_process_on_teardown(tmp_path, monkeypatch):
     assert replica_processes[0].terminate_calls == 1
 
 
-# --------------------------------------------------------------------------
-# submit / status
-# --------------------------------------------------------------------------
-
-
 def test_submit_command_uses_slurm_options_and_exports(tmp_path):
     args = SimpleNamespace(
         script=Path("sbatch/run_osworld_env_fleet.sbatch"),
@@ -973,11 +953,6 @@ def test_status_format_and_registry_rendering(tmp_path):
     assert "Startup retry: scheduled_workers=1" in report
     assert "cooldown_remaining_s=12.5" in report
     assert "tcp://node001:5200" in report
-
-
-# --------------------------------------------------------------------------
-# harness payload path helpers
-# --------------------------------------------------------------------------
 
 
 def test_path_helpers_default_to_project_scratch_and_sibling_osworld(monkeypatch):

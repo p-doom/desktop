@@ -125,7 +125,6 @@ class ZMQRolloutGateway:
         request_timeout_s: float = 900.0,
         backend_quarantine_s: float = 30.0,
         capacity_check_interval: float = 5.0,
-        capacity_startup_grace_s: float = 900.0,
         capacity_wait_timeout_s: float | None = None,
         max_pending_requests: int = 0,
         status_stale_after_s: float = 120.0,
@@ -148,7 +147,6 @@ class ZMQRolloutGateway:
         self.request_timeout_s = request_timeout_s
         self.backend_quarantine_s = backend_quarantine_s
         self.capacity_check_interval = capacity_check_interval
-        self.capacity_startup_grace_s = capacity_startup_grace_s
         self.capacity_wait_timeout_s = (
             request_timeout_s
             if capacity_wait_timeout_s is None
@@ -723,16 +721,10 @@ GATEWAY_TUNABLES = (
     "request_timeout_s",
     "backend_quarantine_s",
     "capacity_check_interval",
-    "capacity_startup_grace_s",
     "capacity_wait_timeout_s",
     "max_pending_requests",
     "status_stale_after_s",
 )
-
-
-# --------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -774,7 +766,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--request-timeout-s", type=float, default=900.0)
     parser.add_argument("--backend-quarantine-s", type=float, default=30.0)
     parser.add_argument("--capacity-check-interval", type=float, default=5.0)
-    parser.add_argument("--capacity-startup-grace-s", type=float, default=900.0)
     parser.add_argument("--capacity-wait-timeout-s", type=float)
     parser.add_argument("--max-pending-requests", type=int, default=0)
     parser.add_argument("--status-stale-after-s", type=float, default=120.0)

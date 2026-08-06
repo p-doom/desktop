@@ -87,11 +87,6 @@ MappingLike = dict[str, Any]
 TrainerSectionFactory = Callable[[FleetRunLayout], str]
 
 
-# --------------------------------------------------------------------------
-# declarative env-backed options (shared by submit and prepare)
-# --------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class Opt:
     """A CLI flag whose default comes from -- and whose value exports to -- env."""
@@ -201,11 +196,6 @@ def write_json_atomic(path: Path, payload: MappingLike) -> None:
     tmp.replace(path)
 
 
-# --------------------------------------------------------------------------
-# harness payload defaults (the leased desktop image, not the fleet itself)
-# --------------------------------------------------------------------------
-
-
 def osworld_root(env: Mapping[str, str] = os.environ) -> Path:
     """Return the OSWorld checkout, defaulting to a sibling OSWorldRL."""
     if value := env.get("OSWORLD_ROOT"):
@@ -254,10 +244,6 @@ def broker_command(python: str) -> list[str]:
     """Return the in-package broker entrypoint the supervisor spawns."""
     return [python, "-m", BROKER_MODULE]
 
-
-# --------------------------------------------------------------------------
-# prepare: render env-server configs and upsert the registry
-# --------------------------------------------------------------------------
 
 PREPARE_OPTIONS: tuple[Opt, ...] = (
     Opt("--bind-host", str, "0.0.0.0", "OSWORLD_FLEET_BIND_HOST"),
@@ -534,11 +520,6 @@ def expected_ready_sessions(args: argparse.Namespace, replica_count: int) -> int
     return (
         replica_count * args.workers_per_server * args.desktop_pool_min_ready_sessions
     )
-
-
-# --------------------------------------------------------------------------
-# run: supervise replicas and the broker inside one allocation
-# --------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -1162,11 +1143,6 @@ def replica_status(
     }
 
 
-# --------------------------------------------------------------------------
-# process-group reaping: a leased machine outlives a naive terminate()
-# --------------------------------------------------------------------------
-
-
 def terminate_process(
     process: subprocess.Popen[Any] | None,
     *,
@@ -1382,10 +1358,6 @@ def archive_status_files(status_dir: Path | None, replica_name: str) -> Path | N
     return archive_dir
 
 
-# --------------------------------------------------------------------------
-# submit / status / cancel: the operator front end
-# --------------------------------------------------------------------------
-
 SUBMIT_OPTIONS: tuple[Opt, ...] = (
     Opt("--desktop-pool-min-ready-sessions", int, 1),
     Opt("--desktop-pool-max-sessions", int, 64, read=False),
@@ -1585,9 +1557,8 @@ def build_sbatch_command(args: argparse.Namespace) -> list[str]:
     for opt in SUBMIT_OPTIONS:
         if (value := arg_values.get(opt.attr)) is not None:
             exports[opt.env_name] = str(value)
-    if exports:
-        rendered_exports = ",".join(f"{key}={value}" for key, value in exports.items())
-        command.append(f"--export=ALL,{rendered_exports}")
+    rendered_exports = ",".join(f"{key}={value}" for key, value in exports.items())
+    command.append(f"--export=ALL,{rendered_exports}")
     command.append(str(args.script))
     return command
 
@@ -1856,9 +1827,8 @@ def main(
         return submit(args, trainer_section_factory=trainer_section_factory)
     if args.command == "status":
         return status(args)
-    if args.command == "cancel":
-        return cancel(args)
-    raise ValueError(f"unknown command: {args.command}")
+    assert args.command == "cancel", args.command
+    return cancel(args)
 
 
 if __name__ == "__main__":

@@ -64,11 +64,6 @@ def _fake_completed_process(*, returncode: int, stdout: str = "", stderr: str = 
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
-# --------------------------------------------------------------------------
-# run_command: the shared subprocess.run wrapper behind every scontrol call
-# --------------------------------------------------------------------------
-
-
 def test_run_command_returns_stdout_and_exact_argv_on_success(monkeypatch):
     calls = []
 
@@ -106,11 +101,6 @@ def test_run_command_swallows_a_missing_binary_without_raising(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert run_command(["scontrol", "show", "node", "node001"]) == ""
-
-
-# --------------------------------------------------------------------------
-# query_squeue: exact argv and failure containment
-# --------------------------------------------------------------------------
 
 
 def test_query_squeue_uses_jobs_filter_when_job_id_is_given(monkeypatch):
@@ -174,11 +164,6 @@ def test_query_squeue_returns_empty_list_on_nonzero_exit_not_a_fabricated_job(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert query_squeue(job_id=None, job_name="osworld_env_fleet") == []
-
-
-# --------------------------------------------------------------------------
-# slurm_node_addrs: hostname-range expansion and per-node NodeAddr lookup
-# --------------------------------------------------------------------------
 
 
 def test_slurm_node_addrs_returns_empty_without_calling_scontrol(monkeypatch):

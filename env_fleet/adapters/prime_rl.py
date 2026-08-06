@@ -50,11 +50,6 @@ LAUNCHER_SCRIPT = "scripts/prime_rl.py"
 RENDER_MODULE = "env_fleet.adapters.prime_rl"
 
 
-# --------------------------------------------------------------------------
-# consumer paths
-# --------------------------------------------------------------------------
-
-
 def prime_rl_dir(env: Mapping[str, str] = os.environ) -> Path:
     """Locate the prime-rl checkout that owns the validating interpreter."""
     value = env.get("PRIME_RL_DIR")
@@ -106,11 +101,6 @@ def consumer_paths_env_value(
 ) -> str:
     """Render ``ENV_FLEET_CONSUMER_PATHS`` so ``prepare`` records both paths."""
     return render_consumer_paths(consumer_paths(layout, env))
-
-
-# --------------------------------------------------------------------------
-# render + validate a prime-rl config against a live fleet registry
-# --------------------------------------------------------------------------
 
 
 def render_main(argv: Sequence[str] | None = None) -> int:
@@ -321,18 +311,8 @@ def validate_prime_rl_config(path: Path) -> None:
         raise ValueError(f"generated PrimeRL config is invalid:\n{detail}")
 
 
-# --------------------------------------------------------------------------
-# operator-facing launch block + CLI
-# --------------------------------------------------------------------------
-
-
-def format_trainer_command(layout: FleetRunLayout) -> str:
-    """Build the copy-pastable PrimeRL launch command for this fleet.
-
-    Uses the layout exactly as handed over -- if ``prepare`` recorded prime-rl
-    consumer paths they are already in it; otherwise the run-dir defaults apply.
-    """
-    resolved = layout
+def format_trainer_command(resolved: FleetRunLayout) -> str:
+    """Build the copy-pastable PrimeRL launch command for this fleet."""
     rendered_config = shlex.quote(str(config_path(resolved)))
     launch_command = supervise.format_shell_command(
         [

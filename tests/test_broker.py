@@ -621,7 +621,6 @@ def test_gateway_does_not_count_starting_as_routable_capacity(tmp_path):
         encoding="utf-8",
     )
     gateway = gateway_with_fake_sockets(backend_status_dirs=[str(status_dir), None])
-    gateway.capacity_startup_grace_s = 10.0
     backend = gateway.backends[0]
     backend.healthy = True
     now = time.monotonic()

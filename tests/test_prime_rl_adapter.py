@@ -16,11 +16,6 @@ def disable_runtime_env_file(monkeypatch):
     monkeypatch.setenv("RL_RUNTIME_ENV_FILE", "")
 
 
-# --------------------------------------------------------------------------
-# consumer paths (the only prime-rl coupling that touches the layout)
-# --------------------------------------------------------------------------
-
-
 def test_prime_rl_paths_default_under_the_run_dir(tmp_path):
     layout = FleetRunLayout.for_run(
         run_id="12345",
@@ -71,11 +66,6 @@ def test_prime_rl_paths_survive_a_registry_metadata_round_trip(tmp_path):
         f"prime_rl_config_path={tmp_path / 'custom' / 'prime_rl.toml'},"
         f"prime_rl_output_dir={tmp_path / 'custom' / 'prime_rl_output'}"
     )
-
-
-# --------------------------------------------------------------------------
-# trainer/orchestrator config rendering
-# --------------------------------------------------------------------------
 
 
 def test_render_prime_rl_fleet_config_uses_v1_schema(tmp_path):
@@ -178,11 +168,6 @@ def test_render_prime_rl_fleet_config_uses_gateway_address(tmp_path):
 
     assert rendered["address"] == "tcp://node001:5202"
     assert "tcp://node001:5200" not in json.dumps(rendered)
-
-
-# --------------------------------------------------------------------------
-# operator launch block, injected as a callable
-# --------------------------------------------------------------------------
 
 
 def test_submit_report_prints_prime_rl_next_steps(tmp_path):
