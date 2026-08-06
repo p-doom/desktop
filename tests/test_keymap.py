@@ -148,7 +148,7 @@ def test_resolution_order_is_exact_then_alias_then_function_then_shape():
     assert guest_key("F24") == "f24"
     # 4. Key<X> / Num<N> / Digit<N>
     assert guest_key("KeyB") == "b"
-    # 5/6. single character, then bare lowercase
+    # 5. bare lowercase, which is also what a single character gets
     assert guest_key("b") == "b"
     assert guest_key("Unheard") == "unheard"
 

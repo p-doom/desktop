@@ -53,8 +53,7 @@ class ExecutionError(RuntimeError):
 
     def __init__(self, message: str, *, evidence: dict[str, Any] | None = None) -> None:
         super().__init__(message)
-        if evidence is not None or not hasattr(self, "evidence"):
-            self.evidence = evidence
+        self.evidence = evidence
 
 
 @dataclass

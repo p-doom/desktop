@@ -161,9 +161,9 @@ def guest_key(name: str) -> str:
        rather than on a lowercased passthrough the guest ignores
     4. ``F1``..``F24`` (case-insensitive)
     5. ``Key<A>`` -> ``"a"``; ``Num<0>`` / ``Digit<0>`` -> ``"0"``
-    6. a single character -> itself, lowercased
-    7. otherwise the name lowercased -- the guest backend accepts many
-       lowercased X11 names verbatim, so passing through beats raising
+    6. otherwise the name lowercased -- which covers a single character, and the
+       guest backend accepts many lowercased X11 names verbatim, so passing
+       through beats raising
     """
     if not isinstance(name, str):
         raise KeymapError(f"key must be a string, got {type(name).__name__}")
@@ -185,8 +185,6 @@ def guest_key(name: str) -> str:
         return stripped[3]
     if len(stripped) == 6 and stripped.startswith("Digit") and stripped[5].isdigit():
         return stripped[5]
-    if len(stripped) == 1:
-        return stripped.lower()
     return stripped.lower()
 
 
