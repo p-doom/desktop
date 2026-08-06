@@ -38,9 +38,9 @@ synthetic frames with no VM and no image decoding in the loop.
 ## The seam
 
 ```python
-from desktop_env import DisplayGeometry, Operation
-from desktop_env.execute import Engine, HttpGuiTransport
-from desktop_env.vm import DesktopSession, QemuRuntime
+from pixeldesk import DisplayGeometry, Operation
+from pixeldesk.execute import Engine, HttpGuiTransport
+from pixeldesk.vm import DesktopSession, QemuRuntime
 
 runtime = QemuRuntime(image=Path("/images/guest.qcow2"))
 with DesktopSession(runtime) as session:
@@ -57,7 +57,7 @@ with DesktopSession(runtime) as session:
     session.reset()   # ~4.5 s, and it proves the guest actually rewound
 ```
 
-`your_codec` satisfies `desktop_env.codec_protocol.Codec` and lives in *your*
+`your_codec` satisfies `pixeldesk.codec_protocol.Codec` and lives in *your*
 repository. That is the whole contract:
 
 ```python

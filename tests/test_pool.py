@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from desktop_env.vm.pool import (
+from pixeldesk.vm.pool import (
     DesktopPoolConfig,
     DesktopSessionPool,
     PortLease,
@@ -798,7 +798,7 @@ def test_the_log_write_dir_is_symlinked_when_it_differs(tmp_path):
 
 
 def test_a_wrong_target_log_symlink_is_refused(tmp_path):
-    from desktop_env.vm.pool import _ensure_symlink_dir
+    from pixeldesk.vm.pool import _ensure_symlink_dir
 
     (tmp_path / "real").mkdir()
     (tmp_path / "other").mkdir()

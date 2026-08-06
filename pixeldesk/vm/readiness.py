@@ -25,7 +25,7 @@ than owning a dependency.
 Pillow is the dependency shape that is acceptable: it does one thing, its
 correctness criterion is external to us (it either decodes the PNG the way every
 other tool does or it is broken and everyone knows), and its import floor is
-small.  ``desktop_env`` imports it here and nowhere else, and screenshots are
+small.  ``pixeldesk`` imports it here and nowhere else, and screenshots are
 still handed across every other boundary as raw ``bytes``.
 
 A second benefit of going back to Pillow, which the hand-rolled version had

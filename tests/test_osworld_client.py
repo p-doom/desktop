@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from desktop_env.vm.osworld_client import GuestAgentError, OSWorldClient
+from pixeldesk.vm.osworld_client import GuestAgentError, OSWorldClient
 
 #: What the fake agent should answer, per path.  Mutated per test.
 ROUTES: dict = {}

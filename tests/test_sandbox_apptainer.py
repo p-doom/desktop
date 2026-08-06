@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from desktop_env.vm.sandbox_protocol import (
+from pixeldesk.vm.sandbox_protocol import (
     DEFAULT_TRANSFER_TIMEOUT_S,
     MAX_TRANSFER_BYTES,
     ApptainerSandboxProvider,
@@ -343,7 +343,7 @@ def test_stdout_noise_after_the_payload_also_cannot_corrupt_it(
 
 def test_a_download_whose_stdout_has_no_payload_raises(provider, sandbox, tmp_path, guest_path):
     async def only_noise(handle, command, **kwargs):
-        from desktop_env.vm.sandbox_protocol import SandboxExecResult
+        from pixeldesk.vm.sandbox_protocol import SandboxExecResult
 
         return SandboxExecResult("just a banner, no file", "", 0)
 
@@ -355,7 +355,7 @@ def test_a_download_whose_stdout_has_no_payload_raises(provider, sandbox, tmp_pa
 def test_a_corrupt_base64_body_raises_rather_than_persisting_a_truncated_file(
     provider, sandbox, tmp_path, guest_path
 ):
-    from desktop_env.vm.sandbox_protocol import (
+    from pixeldesk.vm.sandbox_protocol import (
         _DOWNLOAD_BEGIN,
         _DOWNLOAD_END,
         SandboxExecResult,
@@ -376,7 +376,7 @@ def test_a_corrupt_base64_body_raises_rather_than_persisting_a_truncated_file(
 def test_whitespace_around_the_payload_is_tolerated(provider, sandbox, tmp_path, guest_path):
     import base64
 
-    from desktop_env.vm.sandbox_protocol import (
+    from pixeldesk.vm.sandbox_protocol import (
         _DOWNLOAD_BEGIN,
         _DOWNLOAD_END,
         SandboxExecResult,
@@ -400,7 +400,7 @@ def test_the_fence_markers_are_not_base64_alphabet_text():
     """So a fence can never be mistaken for payload, nor payload for a fence."""
     import string
 
-    from desktop_env.vm.sandbox_protocol import _DOWNLOAD_BEGIN, _DOWNLOAD_END
+    from pixeldesk.vm.sandbox_protocol import _DOWNLOAD_BEGIN, _DOWNLOAD_END
 
     alphabet = set(string.ascii_letters + string.digits + "+/=")
     for marker in (_DOWNLOAD_BEGIN, _DOWNLOAD_END):
@@ -458,7 +458,7 @@ def test_connecting_to_a_stopped_sandbox_is_refused(provider, sandbox):
 
 
 def test_the_provider_satisfies_the_connectable_protocol():
-    from desktop_env.vm.sandbox_protocol import (
+    from pixeldesk.vm.sandbox_protocol import (
         ConnectableProvider,
         SupportsSandboxEndpoint,
     )
@@ -604,7 +604,7 @@ def test_an_upload_that_hangs_raises_a_timeout(provider, sandbox, tmp_path, gues
     source.write_bytes(b"x" * 64)
 
     async def hanging(handle, command, *, stdin, timeout_s=None):
-        from desktop_env.vm.sandbox_protocol import SandboxExecResult
+        from pixeldesk.vm.sandbox_protocol import SandboxExecResult
 
         assert stdin, "the payload must reach the subprocess on stdin"
         assert timeout_s == 0.2, "the caller's timeout must reach the subprocess"
@@ -619,7 +619,7 @@ def test_a_download_that_hangs_raises_a_timeout(provider, sandbox, tmp_path, gue
     seen: dict = {}
 
     async def hanging(handle, command, **kwargs):
-        from desktop_env.vm.sandbox_protocol import SandboxExecResult
+        from pixeldesk.vm.sandbox_protocol import SandboxExecResult
 
         seen.update(kwargs)
         return SandboxExecResult(None, None, -1, error_type="timeout")

@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import pytest
 
-from desktop_env.execute.guest_program import BUTTON_MASKS
-from desktop_env.execute.keymap import (
+from pixeldesk.execute.guest_program import BUTTON_MASKS
+from pixeldesk.execute.keymap import (
     BUTTON_ALIASES,
     BUTTON_NUMBERS,
     KEY_ALIASES,
@@ -279,7 +279,7 @@ def test_case_folding_did_not_flatten_a_sided_name_into_a_loose_one():
 def test_the_folded_table_has_no_case_insensitive_collisions():
     """Two ``KEY_NAMES`` entries differing only in case would make the fold
     order-dependent; there are none, and a new one must be a visible change."""
-    from desktop_env.execute.keymap import _KEY_NAMES_FOLDED
+    from pixeldesk.execute.keymap import _KEY_NAMES_FOLDED
 
     assert len(_KEY_NAMES_FOLDED) == len(KEY_NAMES)
     assert set(_KEY_NAMES_FOLDED.values()) == set(KEY_NAMES.values())
@@ -457,8 +457,8 @@ def test_button_transition_maps_and_validates():
     ],
 )
 def test_a_press_and_release_spelled_differently_still_balance(down, up):
-    from desktop_env import ir
-    from desktop_env.execute.guest_program import expected_atomic_input_state
+    from pixeldesk import ir
+    from pixeldesk.execute.guest_program import expected_atomic_input_state
 
     assert guest_key(down) == guest_key(up), "fixture must be two spellings of one key"
     buttons, keys = expected_atomic_input_state(
@@ -469,8 +469,8 @@ def test_a_press_and_release_spelled_differently_still_balance(down, up):
 
 
 def test_pressing_one_key_under_two_spellings_is_a_double_press():
-    from desktop_env import ir
-    from desktop_env.execute.guest_program import ExecutionError, expected_atomic_input_state
+    from pixeldesk import ir
+    from pixeldesk.execute.guest_program import ExecutionError, expected_atomic_input_state
 
     with pytest.raises(ExecutionError, match="key already held: enter"):
         expected_atomic_input_state(
@@ -482,8 +482,8 @@ def test_pressing_one_key_under_two_spellings_is_a_double_press():
 
 def test_held_state_is_reported_in_the_mapped_vocabulary():
     """So the host's held set and the guest's ``_de_touched_keys`` are comparable."""
-    from desktop_env import ir
-    from desktop_env.execute.guest_program import expected_atomic_input_state
+    from pixeldesk import ir
+    from pixeldesk.execute.guest_program import expected_atomic_input_state
 
     _, keys = expected_atomic_input_state(
         (ir.key_down("ControlLeft"), ir.key_down("KeyA")),
@@ -495,8 +495,8 @@ def test_held_state_is_reported_in_the_mapped_vocabulary():
 
 def test_incoming_initial_keys_are_normalised_too():
     """An audit carried over from a previous action may hold either spelling."""
-    from desktop_env import ir
-    from desktop_env.execute.guest_program import expected_atomic_input_state
+    from pixeldesk import ir
+    from pixeldesk.execute.guest_program import expected_atomic_input_state
 
     _, keys = expected_atomic_input_state(
         (ir.key_up("Enter"),), initial_buttons=set(), initial_keys={"Return"}
@@ -507,8 +507,8 @@ def test_incoming_initial_keys_are_normalised_too():
 def test_normalisation_is_idempotent_across_action_boundaries():
     """Held state feeds back in as ``initial_keys``; a second pass must be a
     no-op, or a long trajectory would drift."""
-    from desktop_env import ir
-    from desktop_env.execute.guest_program import expected_atomic_input_state
+    from pixeldesk import ir
+    from pixeldesk.execute.guest_program import expected_atomic_input_state
 
     _, first = expected_atomic_input_state(
         (ir.key_down("Return"),), initial_buttons=set(), initial_keys=set()
@@ -519,7 +519,7 @@ def test_normalisation_is_idempotent_across_action_boundaries():
 
 def test_a_cross_spelling_pair_executes_in_the_guest_as_one_key():
     """End to end: the compiled program presses and releases the same key once."""
-    from desktop_env import ir
+    from pixeldesk import ir
     from tests.support.guest_runner import run_guest_program
 
     run = run_guest_program((ir.key_down("Return"), ir.key_up("Enter")))
@@ -530,7 +530,7 @@ def test_a_cross_spelling_pair_executes_in_the_guest_as_one_key():
 
 def test_the_recording_double_balances_the_same_pair(recording):
     """The double keys held state the same way, or it rejects what the guest runs."""
-    from desktop_env import ir
+    from pixeldesk import ir
 
     result = recording.execute_atomic((ir.key_down("KeyA"), ir.key_up("a")))
     assert result.ok is True, result.error
@@ -543,7 +543,7 @@ def test_the_recording_double_balances_the_same_pair(recording):
 
 
 def test_the_recording_double_and_the_guest_agree_on_the_trace(recording):
-    from desktop_env import ir
+    from pixeldesk import ir
     from tests.support.guest_runner import run_guest_program
 
     operations = (
@@ -560,8 +560,8 @@ def test_the_recording_double_and_the_guest_agree_on_the_trace(recording):
 
 def test_an_unbalanced_release_is_still_rejected():
     """The normalisation must not weaken the check it is part of."""
-    from desktop_env import ir
-    from desktop_env.execute.guest_program import ExecutionError, expected_atomic_input_state
+    from pixeldesk import ir
+    from pixeldesk.execute.guest_program import ExecutionError, expected_atomic_input_state
 
     with pytest.raises(ExecutionError, match="key not held: shift"):
         expected_atomic_input_state(
@@ -572,8 +572,8 @@ def test_an_unbalanced_release_is_still_rejected():
 
 
 def test_two_genuinely_different_keys_are_still_two_keys():
-    from desktop_env import ir
-    from desktop_env.execute.guest_program import expected_atomic_input_state
+    from pixeldesk import ir
+    from pixeldesk.execute.guest_program import expected_atomic_input_state
 
     _, keys = expected_atomic_input_state(
         (ir.key_down("MetaLeft"), ir.key_down("META")),
@@ -585,8 +585,8 @@ def test_two_genuinely_different_keys_are_still_two_keys():
 
 def test_a_malformed_key_name_raises_instead_of_being_tracked():
     """``guest_key`` rejects an empty name, so held state cannot contain one."""
-    from desktop_env import ir
-    from desktop_env.execute.guest_program import expected_atomic_input_state
+    from pixeldesk import ir
+    from pixeldesk.execute.guest_program import expected_atomic_input_state
 
     with pytest.raises(KeymapError):
         expected_atomic_input_state(

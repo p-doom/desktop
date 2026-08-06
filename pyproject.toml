@@ -1,5 +1,22 @@
 [project]
-name = "desktop-env"
+# `pixeldesk`, NOT `desktop-env`. That name is taken on PyPI by
+# xlang-ai/desktop_env (OSWorld) -- the same distribution name AND the same
+# import name, a different package. This one has no remote and no index
+# presence, so it was resolved only by juergen's `[tool.uv.sources]` path
+# entry, which uv reads and pip does not: `pip install juergen` fetched
+# OSWorld's package and the first codec import died on a missing
+# `desktop_env.geometry`.
+#
+# The rename is a CORRECTNESS fix, not hygiene. `evals/osworld.py` imports
+# OSWorld's `desktop_env.controllers.setup` and `desktop_env.evaluators` to
+# score the benchmark; while this package owned that import name, that import
+# resolved to *this* module and no $OSWORLD_ROOT could fix it -- sys.path
+# cannot override an entry already in sys.modules. Two packages cannot share
+# one import name when a process needs both, and this one needed both.
+#
+# Checked unclaimed before adoption: pypi.org/pypi/pixeldesk/json -> 404, and
+# so are the `pixel-desk` / `pixel_desk` normalisations.
+name = "pixeldesk"
 version = "0.1.0"
 description = "Apply absolute-pixel input operations to a real desktop VM, and reset it. Grammar-free, stdlib-only."
 requires-python = ">=3.12"
@@ -16,7 +33,7 @@ requires-python = ">=3.12"
 # Pillow clears the bar on three counts: it does one thing, its correctness
 # criterion is external to us (it decodes an image the way every other tool does,
 # or it is visibly broken), and its import floor is small. It is used in exactly
-# one place -- desktop_env/vm/readiness.py -- to downsample a screenshot and
+# one place -- pixeldesk/vm/readiness.py -- to downsample a screenshot and
 # measure it. The alternative was a hand-written PNG decoder, and that was
 # rejected because a decoder bug is SILENT: it makes readiness report "not
 # ready", which is indistinguishable from a slow VM. Owning a failure mode that
@@ -27,7 +44,7 @@ requires-python = ">=3.12"
 dependencies = ["pillow>=10"]
 
 [project.optional-dependencies]
-# Test-only. Nothing here may be imported by desktop_env/ itself.
+# Test-only. Nothing here may be imported by pixeldesk/ itself.
 dev = ["pytest>=8"]
 
 [build-system]
@@ -35,10 +52,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["desktop_env*"]
+include = ["pixeldesk*"]
 
 [tool.setuptools.package-data]
-"desktop_env.vm.images" = ["*.def", "*.md"]
+"pixeldesk.vm.images" = ["*.def", "*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

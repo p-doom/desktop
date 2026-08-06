@@ -1,4 +1,4 @@
-"""desktop-env: apply resolved input to a real desktop, and reset it.
+"""pixeldesk: apply resolved input to a real desktop, and reset it.
 
 THE INVARIANT.  Nothing in this package imports a grammar or a codec, and nothing
 here knows what an action grammar is.  It receives ``Operation``s already resolved
@@ -8,7 +8,7 @@ difference between them is fully consumed inside their own ``Codec.compile`` bef
 an ``Operation`` exists.
 
 ONE runtime dependency: Pillow, used in exactly one place
-(``desktop_env.vm.readiness``) to downsample and measure a screenshot.  A
+(``pixeldesk.vm.readiness``) to downsample and measure a screenshot.  A
 hand-written PNG decoder was written and then deleted, because a decoder bug is
 silent -- it makes readiness say "not ready", which is indistinguishable from a
 slow VM.  HTTP is ``urllib.request``, and screenshots cross every other boundary

@@ -15,11 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from desktop_env.execute.guest_program import (
+from pixeldesk.execute.guest_program import (
     ATOMIC_RESULT_PREFIX,
     compile_atomic_guest_program,
 )
-from desktop_env.ir import Operation
+from pixeldesk.ir import Operation
 
 SUPPORT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SUPPORT_DIR.parent.parent

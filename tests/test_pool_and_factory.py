@@ -27,23 +27,23 @@ from pathlib import Path
 
 import pytest
 
-from desktop_env.vm import factory as factory_module
-from desktop_env.vm.factory import (
+from pixeldesk.vm import factory as factory_module
+from pixeldesk.vm.factory import (
     ENVIRONMENT,
     ConfigError,
     build_desktop_session,
     build_qemu_runtime,
     qemu_session_factory,
 )
-from desktop_env.vm.pool import (
+from pixeldesk.vm.pool import (
     PortLease,
     WorkerPorts,
     allocate_worker_ports,
     get_port_base,
     ports_for_worker,
 )
-from desktop_env.vm.qemu import QemuError, QemuRuntime
-from desktop_env.vm.runtime import GuestPorts
+from pixeldesk.vm.qemu import QemuError, QemuRuntime
+from pixeldesk.vm.runtime import GuestPorts
 
 
 _PORT_WINDOW = itertools.count()
@@ -136,7 +136,7 @@ def test_the_lease_ports_reach_the_runtime(port_base, tmp_path, image, monkeypat
 
 def test_the_runtime_forwards_exactly_the_pinned_ports(image, tmp_path, monkeypatch):
     """The end of the chain: the pinned block is what appears in ``-netdev``."""
-    import desktop_env.vm.qemu as qemu_module
+    import pixeldesk.vm.qemu as qemu_module
 
     captured: dict = {}
 
@@ -174,7 +174,7 @@ def test_the_runtime_forwards_exactly_the_pinned_ports(image, tmp_path, monkeypa
 
 
 def test_a_runtime_with_pinned_ports_never_calls_free_port(image, monkeypatch):
-    import desktop_env.vm.qemu as qemu_module
+    import pixeldesk.vm.qemu as qemu_module
 
     def explode():
         raise AssertionError("free_port must not be reached when ports are pinned")
@@ -259,7 +259,7 @@ def test_a_lease_held_by_another_PROCESS_is_not_handed_out_again(port_base, tmp_
             (
                 "import sys, time\n"
                 f"sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})\n"
-                "from desktop_env.vm.pool import allocate_worker_ports\n"
+                "from pixeldesk.vm.pool import allocate_worker_ports\n"
                 f"lease = allocate_worker_ports(\n"
                 f"    lock_dir={str(locks)!r}, work_dir={str(work)!r}\n"
                 f")\n"
@@ -384,7 +384,7 @@ def test_an_unpinned_runtime_still_retries_the_lost_bind_race(image, monkeypatch
         raise QemuError("qemu died early (rc=1)")
 
     monkeypatch.setattr(QemuRuntime, "_start_once", failing_start)
-    monkeypatch.setattr("desktop_env.vm.qemu.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("pixeldesk.vm.qemu.time.sleep", lambda seconds: None)
     with pytest.raises(QemuError):
         QemuRuntime(image=image, accelerator="tcg").start()
     assert len(attempts) == 3
@@ -450,7 +450,7 @@ class DummyRuntime:
     base_checkpoint = "base"
 
     def start(self):
-        from desktop_env.vm.runtime import RuntimeState
+        from pixeldesk.vm.runtime import RuntimeState
 
         return RuntimeState(
             runtime_id="r",
@@ -463,7 +463,7 @@ class DummyRuntime:
         pass
 
     def ensure_base(self):
-        from desktop_env.vm.runtime import Checkpoint
+        from pixeldesk.vm.runtime import Checkpoint
 
         return Checkpoint("base", 0)
 
@@ -482,7 +482,7 @@ def test_two_sessions_sharing_a_scratch_root_collide_on_the_task_lock(tmp_path):
     whether a ``SLURM_NTASKS != 1`` environment is rejected.  So the second
     session fails here even with the pooled default of ``False``.
     """
-    from desktop_env.vm.session import DesktopSession, SessionError
+    from pixeldesk.vm.session import DesktopSession, SessionError
 
     first = DesktopSession(
         DummyRuntime(), scratch_root=tmp_path, session_id="a", require_single_task=False
@@ -509,7 +509,7 @@ def test_what_actually_separates_two_pooled_sessions_is_the_per_lease_scratch_ro
     for a different reason than stated: a pool process legitimately runs under
     ``SLURM_NTASKS > 1``.
     """
-    from desktop_env.vm.session import DesktopSession
+    from pixeldesk.vm.session import DesktopSession
 
     for flag in (False, True):
         first = DesktopSession(
@@ -534,7 +534,7 @@ def test_what_actually_separates_two_pooled_sessions_is_the_per_lease_scratch_ro
 
 def test_the_flag_only_gates_the_scheduler_task_count_check(tmp_path, monkeypatch):
     """What ``require_single_task`` actually controls, pinned."""
-    from desktop_env.vm.session import DesktopSession, SessionError
+    from pixeldesk.vm.session import DesktopSession, SessionError
 
     monkeypatch.setenv("SLURM_NTASKS", "4")
     strict = DesktopSession(
@@ -576,7 +576,7 @@ def test_the_lease_workdir_becomes_the_session_scratch_root(
 
 
 def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
-    from desktop_env.vm.pool import DesktopPoolSession, _close_session_resources
+    from pixeldesk.vm.pool import DesktopPoolSession, _close_session_resources
 
     lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w")
     closed = []

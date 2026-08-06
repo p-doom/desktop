@@ -12,7 +12,7 @@ The predecessor client was 592 LOC because it grew three grammar-specific
 ``dispatch_*`` methods (one per action format the project was A/B-ing) plus its
 own two key-name tables.  All of that is gone from here: dispatch belongs to a
 codec and an executor, and the key tables are consolidated in
-``desktop_env.execute.keymap``.  What is left is a transport.
+``pixeldesk.execute.keymap``.  What is left is a transport.
 
 Screenshots are handed back as **PNG bytes**, never as decoded images.  Pillow is
 the caller's problem, and the caller is the only party who knows whether it wants
@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-_LOG = logging.getLogger("desktop_env.vm.osworld_client")
+_LOG = logging.getLogger("pixeldesk.vm.osworld_client")
 
 
 class GuestAgentError(RuntimeError):
@@ -138,7 +138,7 @@ class OSWorldClient:
         ``shell: false`` always.  The agent runs a subprocess and does not eval,
         so a caller that wants Python in the guest passes
         ``["python", "-c", <program>]`` -- which is what
-        ``desktop_env.execute.guest_program`` compiles.
+        ``pixeldesk.execute.guest_program`` compiles.
         """
         result = self._request_json(
             "POST", "/execute", payload={"command": list(argv), "shell": False},

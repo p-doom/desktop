@@ -169,7 +169,7 @@ class Engine:
     def apply_text(self, text: str, codec: Any) -> StepReceipt:
         """Compile model output through a codec, then apply it.
 
-        ``codec`` is anything satisfying ``desktop_env.codec_protocol.Codec``.
+        ``codec`` is anything satisfying ``pixeldesk.codec_protocol.Codec``.
         The geometry and cursor are fetched here and passed *into* the codec, so
         the codec resolves against live state and this engine never learns which
         convention was resolved.

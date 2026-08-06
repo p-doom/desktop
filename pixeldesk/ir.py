@@ -55,7 +55,7 @@ class Operation:
 # --------------------------------------------------------------------------- #
 # The canonical kinds, with their argument shapes.
 #
-# Every entry here is lowered by ``desktop_env.execute.guest_program``.  The
+# Every entry here is lowered by ``pixeldesk.execute.guest_program``.  The
 # coordinates in ``move_to`` and ``drag`` are absolute pixels; there is no
 # relative member, because resolution happens inside a codec's ``compile`` and
 # never inside this package.

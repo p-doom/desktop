@@ -74,7 +74,7 @@ class RuntimeError_(RuntimeError):
 class Runtime(Protocol):
     """A startable, restorable desktop.
 
-    Implementations in this package: ``desktop_env.vm.qemu.QemuRuntime``.  A
+    Implementations in this package: ``pixeldesk.vm.qemu.QemuRuntime``.  A
     caller that only needs a reachable guest should depend on this protocol and
     not on QEMU.
     """

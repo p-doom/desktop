@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-IMAGES_DIR = Path(__file__).resolve().parent.parent / "desktop_env" / "vm" / "images"
+IMAGES_DIR = Path(__file__).resolve().parent.parent / "pixeldesk" / "vm" / "images"
 KVM_DEF = IMAGES_DIR / "osworld-guest-kvm.def"
 NONKVM_DEF = IMAGES_DIR / "desktop-nonkvm.def"
 IMAGES_README = IMAGES_DIR / "README.md"
@@ -51,7 +51,7 @@ def nonkvm_text() -> str:
 def test_both_definitions_exist_and_are_packaged():
     assert KVM_DEF.is_file() and NONKVM_DEF.is_file() and IMAGES_README.is_file()
     pyproject = (IMAGES_DIR.parent.parent.parent / "pyproject.toml").read_text()
-    assert '"desktop_env.vm.images" = ["*.def", "*.md"]' in pyproject
+    assert '"pixeldesk.vm.images" = ["*.def", "*.md"]' in pyproject
 
 
 @pytest.mark.parametrize("definition", [KVM_DEF, NONKVM_DEF])
@@ -144,10 +144,10 @@ def test_the_kvm_tier_still_checks_for_the_qemu_BINARY_by_its_real_name(kvm_text
     test_section = _section(kvm_text, "test")
     assert "command -v qemu-system-x86_64" in test_section
     assert "command -v qemu-img" in test_section
-    from desktop_env.vm.factory import build_qemu_runtime  # noqa: F401
+    from pixeldesk.vm.factory import build_qemu_runtime  # noqa: F401
     import inspect
 
-    from desktop_env.vm import factory
+    from pixeldesk.vm import factory
 
     assert '"qemu-system-x86_64"' in inspect.getsource(factory)
 
@@ -163,7 +163,7 @@ def test_the_kvm_tier_contains_no_desktop(kvm_text):
 def test_the_kvm_tier_pins_a_short_qmp_directory(kvm_text):
     """AF_UNIX caps the socket path, so it must not default to a deep scratch dir."""
     assert "export DESKTOP_ENV_QMP_DIR=/tmp" in _section(kvm_text, "environment")
-    from desktop_env.vm.factory import ENVIRONMENT
+    from pixeldesk.vm.factory import ENVIRONMENT
 
     assert "DESKTOP_ENV_QMP_DIR" in ENVIRONMENT
 
@@ -199,7 +199,7 @@ def test_the_nonkvm_tier_installs_the_input_stack_the_executor_needs(nonkvm_text
 
 def test_the_nonkvm_tier_installs_the_gtk_bindings_the_typing_path_imports(nonkvm_text):
     """``compile_unicode_coalesced_type`` emits ``import gi`` + Gtk 3.0."""
-    from desktop_env.execute.guest_program import compile_unicode_coalesced_type
+    from pixeldesk.execute.guest_program import compile_unicode_coalesced_type
 
     # Non-ASCII: the payload class that still needs the guest's GTK bindings.
     program = compile_unicode_coalesced_type("é")
@@ -322,7 +322,7 @@ def test_the_writable_profile_mechanism_is_still_documented(nonkvm_text):
     directory needs an overlay."""
     assert "--writable-tmpfs" in nonkvm_text
     assert "--overlay" in nonkvm_text
-    from desktop_env.vm.sandbox_protocol import ApptainerSandboxProvider
+    from pixeldesk.vm.sandbox_protocol import ApptainerSandboxProvider
 
     assert ApptainerSandboxProvider().writable_tmpfs is True
 
