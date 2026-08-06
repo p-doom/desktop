@@ -46,11 +46,14 @@ from .keymap import guest_button, guest_key
 class GuiTransport(Protocol):
     """Everything the executor needs from a guest.  No coordinate convention.
 
-    ``glide_to(x, y, seconds)`` and ``hscroll(dx)`` are deliberately NOT members.
-    They are optional backend capabilities, probed with ``getattr`` by whoever
-    dispatches, so a transport that cannot sweep the cursor or scroll sideways is
-    still a valid ``GuiTransport``.  Both transports in this module happen to
-    implement both.
+    ``glide_to`` and ``hscroll`` are members like the rest.  They used to be
+    documented as optional capabilities "probed with ``getattr`` by whoever
+    dispatches" -- but nothing in this package probes for them, both transports
+    implement them, and ``compile_atomic_guest_program`` emits
+    ``pyautogui.moveTo(duration=)`` and ``pyautogui.hscroll`` unconditionally.
+    A transport without them therefore does not half-work; it raises inside the
+    guest program, which is the honest outcome and the one the contract should
+    say out loud.
     """
 
     audit: InputAudit
@@ -58,9 +61,11 @@ class GuiTransport(Protocol):
     def cursor_position(self) -> tuple[int, int]: ...
     def screen_size(self) -> tuple[int, int]: ...
     def move_to(self, x: int, y: int) -> None: ...
+    def glide_to(self, x: int, y: int, seconds: float) -> None: ...
     def mouse_down(self, button: str = "left") -> None: ...
     def mouse_up(self, button: str = "left") -> None: ...
     def scroll(self, clicks: int) -> None: ...
+    def hscroll(self, dx: int) -> None: ...
     def key_chord(self, keys: list[str]) -> None: ...
     def coalesced_type(self, text: str) -> None: ...
     def wait(self, seconds: float) -> None: ...
@@ -332,12 +337,12 @@ class HttpGuiTransport:
         self.audit.operations.append(Operation("scroll", (0, int(clicks))))
 
     def hscroll(self, dx: int) -> None:
-        """Optional backend capability: horizontal wheel."""
+        """Horizontal wheel ticks; the audit records the two-axis form."""
         self.execute_pyautogui(f"pyautogui.hscroll({int(dx)})")
         self.audit.operations.append(Operation("scroll", (int(dx), 0)))
 
     def glide_to(self, x: int, y: int, seconds: float) -> None:
-        """Optional backend capability: a timed absolute move (a drag stroke)."""
+        """A timed absolute move: the stroke of a drag, not a teleport."""
         width, height = self.screen_size()
         x = max(0, min(width - 1, int(x)))
         y = max(0, min(height - 1, int(y)))
@@ -416,7 +421,7 @@ class RecordingTransport:
         self.audit.operations.append(Operation("scroll", (0, int(clicks))))
 
     def hscroll(self, dx: int) -> None:
-        """Optional backend capability: horizontal wheel."""
+        """Horizontal wheel ticks; the audit records the two-axis form."""
         self.audit.operations.append(Operation("scroll", (int(dx), 0)))
 
     def glide_to(self, x: int, y: int, seconds: float) -> None:

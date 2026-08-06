@@ -27,6 +27,7 @@ wrong guest.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -54,6 +55,14 @@ ENVIRONMENT: dict[str, str] = {
         "otherwise derived from SLURM_JOB_ID"
     ),
 }
+
+
+#: QEMU's ``-m`` size grammar, as far as this factory uses it: a count with an
+#: optional binary suffix.  Checked HERE rather than left to QEMU, because every
+#: other value in this table is validated before anything boots and this one was
+#: not: a typo reached ``-m`` and surfaced as a VM that died during startup, i.e.
+#: after a subprocess spawn, wearing a boot failure's error message.
+_MEMORY_SIZE = re.compile(r"[0-9]+[KMGT]?", re.IGNORECASE)
 
 
 class ConfigError(ValueError):
@@ -115,6 +124,12 @@ def build_qemu_runtime(
         raise ConfigError(f"smp must be an integer, got {raw_smp!r}") from exc
     if cpu_count < 1:
         raise ConfigError(f"smp must be at least 1, got {cpu_count}")
+    resolved_memory = memory or _env("DESKTOP_ENV_VM_MEM") or "8G"
+    if not _MEMORY_SIZE.fullmatch(resolved_memory):
+        raise ConfigError(
+            f"memory must be a QEMU -m size such as '8G' or '4096M', got "
+            f"{resolved_memory!r}"
+        )
     return QemuRuntime(
         image=_resolve_image(image),
         qemu_binary=(
@@ -124,7 +139,7 @@ def build_qemu_runtime(
             qemu_img_binary or _env("DESKTOP_ENV_QEMU_IMG_BIN") or "qemu-img"
         ),
         smp=cpu_count,
-        memory=memory or _env("DESKTOP_ENV_VM_MEM") or "8G",
+        memory=resolved_memory,
         log_dir=Path(log_dir) if log_dir else _optional_path("DESKTOP_ENV_VM_LOG_DIR"),
         qmp_dir=Path(qmp_dir) if qmp_dir else _optional_path("DESKTOP_ENV_QMP_DIR"),
         overlay_dir=Path(overlay_dir) if overlay_dir else None,

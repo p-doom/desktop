@@ -700,6 +700,21 @@ def test_a_non_integer_smp_is_refused(image, bad):
         build_qemu_runtime(image=image, smp=bad, accelerator="tcg")
 
 
+@pytest.mark.parametrize("bad", ["8GB", "eight", "8 G", "-4G"])
+def test_a_malformed_memory_size_is_refused_before_anything_boots(image, bad, monkeypatch):
+    """Every other value in ``ENVIRONMENT`` is checked here; this one used to go
+    straight to QEMU's ``-m``, so a typo surfaced as a VM that died during
+    startup -- a config error wearing a boot failure's message."""
+    monkeypatch.setenv("DESKTOP_ENV_VM_MEM", bad)
+    with pytest.raises(ConfigError, match="must be a QEMU -m size"):
+        build_qemu_runtime(image=image, accelerator="tcg")
+
+
+@pytest.mark.parametrize("good", ["8G", "4096M", "2g", "512"])
+def test_a_well_formed_memory_size_is_accepted(image, good):
+    assert build_qemu_runtime(image=image, memory=good, accelerator="tcg").memory == good
+
+
 def test_a_zero_smp_is_refused(image):
     with pytest.raises(ConfigError, match="at least 1"):
         build_qemu_runtime(image=image, smp=0, accelerator="tcg")
