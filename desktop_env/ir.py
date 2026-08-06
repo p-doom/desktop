@@ -42,7 +42,14 @@ class Operation:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "Operation":
-        return cls(str(payload["kind"]), tuple(payload.get("args", ())))
+        """The inverse of ``as_dict``.  Both keys are required.
+
+        ``args`` used to default to ``()`` when absent, which turned a truncated
+        receipt into a well-formed ``Operation`` of the wrong arity -- a
+        ``move_to`` with no destination, rejected later and somewhere else, or
+        not at all.
+        """
+        return cls(str(payload["kind"]), tuple(payload["args"]))
 
 
 # --------------------------------------------------------------------------- #

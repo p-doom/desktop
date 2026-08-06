@@ -262,6 +262,21 @@ def test_the_step_comment_marker_is_emitted_for_every_lowered_operation():
     assert f"DESKTOP_ENV_ATOMIC_STEP_{len(lowered)}:" not in program
 
 
+@pytest.mark.parametrize("operation", ALL_CANONICAL_OPERATIONS)
+def test_an_operation_round_trips_through_its_json_view(operation):
+    """``as_dict`` is what a receipt carries across a process boundary, so its
+    inverse has to reconstruct the same operation for every canonical kind."""
+    assert ir.Operation.from_dict(operation.as_dict()) == operation
+
+
+@pytest.mark.parametrize("payload", [{"kind": "move_to"}, {"args": [1, 2]}])
+def test_a_truncated_operation_payload_is_refused(payload):
+    """``args`` used to default to ``()``, so a truncated receipt rebuilt into a
+    well-formed operation of the wrong arity."""
+    with pytest.raises(KeyError):
+        ir.Operation.from_dict(payload)
+
+
 def test_every_documented_environment_variable_is_read_somewhere():
     """A renamed env-var name that nothing reads is silently ignored config."""
     from desktop_env.vm.factory import ENVIRONMENT
