@@ -1,40 +1,30 @@
 """Is the desktop actually up, or is the framebuffer still black?
 
-Lifted from ``rl/osworld/desktop/readiness.py``.  The heuristic is the load-bearing
-part and is preserved exactly: a guest whose agent answers ``/screenshot`` with a
-200 is not necessarily a guest with a *desktop*.  During boot the framebuffer is
-uniformly black or uniformly grey for tens of seconds, and a harness that starts
-driving then produces a rollout whose first N frames carry no information -- the
-"black-frame carry" failure that silently invalidated a training corpus once
-already.  Two statistics catch it: the fraction of non-dark pixels, and the luma
+A guest whose agent answers ``/screenshot`` with a 200 is not necessarily a guest
+with a *desktop*.  During boot the framebuffer is uniformly black or uniformly
+grey for tens of seconds, and a harness that starts driving then produces a
+rollout whose first N frames carry no information -- the "black-frame carry"
+failure, which silently invalidates a training corpus.  Two statistics catch it:
+the fraction of non-dark pixels, and the luma
 standard deviation.  Dark-and-flat means not ready; either one alone is not
 enough, because a solid grey screen is bright but flat and a mostly-black desktop
 with a bright taskbar is dark but structured.
 
-*** WHY THIS ONE MODULE JUSTIFIES THE PACKAGE'S ONLY DEPENDENCY. ***
+Pillow is this package's only runtime dependency, and it is here for a reason
+specific to this heuristic: a bug in a hand-rolled PNG decoder does not announce
+itself.  It makes the statistics wrong, wrong statistics make readiness say *not
+ready*, and "not ready" is indistinguishable from a slow VM -- a silent failure
+mode that mimics infrastructure slowness and would be diagnosed as infrastructure
+for as long as it took someone to doubt the decoder.  Pillow's correctness
+criterion is external to us and its import floor is small.  ``pixeldesk`` imports
+it here and nowhere else; screenshots cross every other boundary as raw ``bytes``.
 
-An earlier draft decoded PNG by hand with ``zlib`` plus the five scanline filters,
-to hold a zero-dependency floor.  That was the wrong trade, for a reason specific
-to this heuristic: a bug in a hand-written decoder does not announce itself.  It
-makes the statistics wrong, the statistics make readiness say *not ready*, and
-"not ready" is indistinguishable from a slow VM.  The failure mode mimics
-infrastructure slowness, so it would be diagnosed as infrastructure for as long
-as it took someone to doubt the decoder.  Owning a silent failure mode is worse
-than owning a dependency.
+The sampler must AVERAGE, not point-sample: ``thumbnail`` averages over a
+resampling filter, and the two ratio/stddev thresholds below are calibrated
+against that form.
 
-Pillow is the dependency shape that is acceptable: it does one thing, its
-correctness criterion is external to us (it either decodes the PNG the way every
-other tool does or it is broken and everyone knows), and its import floor is
-small.  ``pixeldesk`` imports it here and nowhere else, and screenshots are
-still handed across every other boundary as raw ``bytes``.
-
-A second benefit of going back to Pillow, which the hand-rolled version had
-silently given up: ``thumbnail`` *averages* over a resampling filter, while the
-hand-rolled sampler point-sampled.  The two ratio/stddev thresholds below were
-calibrated against the averaged form, so restoring it restores the calibration.
-
-The ``luma_sampler`` seam is kept: it is what makes the readiness rule testable
-against synthetic frames with no VM and no image file in the loop.
+The ``luma_sampler`` seam is what makes the readiness rule testable against
+synthetic frames with no VM and no image file in the loop.
 """
 
 from __future__ import annotations
@@ -82,9 +72,9 @@ class ScreenshotStatus(Enum):
     EMPTY = "empty"
 
 
-#: Downsample target.  These two numbers are NOT arbitrary and must not be
-#: "tidied": the ratio and stddev thresholds above were calibrated against a
-#: 160x90 average-resampled thumbnail.  Changing this changes what "ready" means.
+#: Downsample target.  The ratio and stddev thresholds above are calibrated
+#: against a 160x90 average-resampled thumbnail; changing this changes what
+#: "ready" means.
 DEFAULT_THUMBNAIL_SIZE = (160, 90)
 
 
@@ -161,9 +151,9 @@ def wait_for_screenshot_ready(
 ) -> bytes:
     """Synchronous readiness wait over any screenshot-returning callable.
 
-    Added alongside the async form below because most of this package is
-    synchronous and importing ``asyncio`` to poll a VM is not a trade worth making
-    for a caller that has no event loop.
+    Most of this package is synchronous, and importing ``asyncio`` to poll a VM is
+    not a trade worth making for a caller with no event loop; the async form below
+    is for callers that already have one.
     """
     if poll_s <= 0:
         raise ValueError(f"poll_s must be positive, got {poll_s}")
@@ -282,10 +272,8 @@ def _raise_if_structurally_broken(
 ) -> None:
     """End the wait early when the guest agent is broken rather than slow.
 
-    Without this the wait polled a garbage-answering agent for the whole 900 s
-    timeout and then raised the same error it could have raised in seconds.  The
-    status vocabulary already drew this distinction and the docstrings already
-    promised it; only the loop did not act on it.
+    Otherwise a garbage-answering agent is polled for the whole 900 s timeout and
+    then raises the same error it could have raised in seconds.
     """
     if status not in _UNRECOVERABLE or streak < DESKTOP_READY_STRUCTURAL_TOLERANCE:
         return

@@ -1,34 +1,24 @@
 """A local QEMU runtime with QMP snapshots, CoW forks, and a TCG fallback.
 
-Lifted from ``qemu_fast_reset.py`` (549 LOC), whose measurements this file
-inherits and whose numbers are the reason it exists:
+Measured on the pinned guest, and the numbers are the reason it exists:
 
     kill+reboot revert          13.6 - 16.6 s
     savevm (RAM+disk snapshot)   3.1 s   (once per VM / per task)
     loadvm + guest-ready         4.4 - 5.2 s   (stable over 15 successive
                                                 restores, no creep)
 
-So a reset's VM phase goes 13.6-16.6 s -> ~4.5 s.  An earlier scoping pass
-reported "28 s" for a reset: that was ONE task that spends ~15 s opening
-LibreOffice Calc, plus a cold-cache first boot -- not a constant, and only the
-reboot half of it is what this fixes.
+So a reset's VM phase goes 13.6-16.6 s -> ~4.5 s.
 
-Correctness of the snapshot path was established upstream against 6 real OSWorld
-TRAIN tasks: reboot, snapshot-revert, and post-setup-snapshot revert give
-IDENTICAL task rewards before and after a scripted ground-truth solve, and
-identical guest state (file lists, gsettings keys, sink volume, window list, task
-output dir, and a guest HTTPS fetch after 15 successive restores).  A restore
-provably rewinds a SOLVED task back to unsolved and a re-solve scores again.
+The snapshot path is validated against 6 real OSWorld TRAIN tasks: reboot,
+snapshot-revert, and post-setup-snapshot revert give IDENTICAL task rewards
+before and after a scripted ground-truth solve, and identical guest state (file
+lists, gsettings keys, sink volume, window list, task output dir, and a guest
+HTTPS fetch after 15 successive restores).  A restore provably rewinds a SOLVED
+task back to unsolved and a re-solve scores again.
 
-*** THIS IS NOT A MONKEYPATCH. ***
-
-Its predecessor was installed into a third-party tree by rewriting that tree's
-provider factory at import time (``install_into_osworld.py``, whose own docstring
-records the outage this caused: the benchmark tree is re-clonable, the re-clone
-silently removed the local-qemu provider, and every job that depended on it
-failed in a way that looked like a model regression).  This module is a plain
-object a caller constructs.  Nothing here reaches into another package's
-namespace, so nothing here can be deleted by someone else's ``git clone``.
+This module is a plain object a caller constructs.  It does not reach into
+another package's namespace or rewrite a third-party provider factory at import
+time, so a re-clone of the benchmark tree cannot silently remove it.
 
 TWO IDEAS READ FROM trycua/cua AND REIMPLEMENTED (no trycua code imported):
 
@@ -39,8 +29,7 @@ TWO IDEAS READ FROM trycua/cua AND REIMPLEMENTED (no trycua code imported):
     It is a slow node, which is still useful for plumbing tests, and it is the
     difference between "the CI job cannot run anywhere" and "the CI job is slow".
 
-Zero dependencies: HTTP readiness polling is ``urllib.request``, where the
-predecessor used ``requests``.
+Zero dependencies: HTTP readiness polling is ``urllib.request``.
 """
 
 from __future__ import annotations

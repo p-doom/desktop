@@ -294,10 +294,9 @@ _OVERSIZE_MARKER = "DESKTOP_ENV_TRANSFER_TOO_LARGE"
 
 #: Wall-clock ceiling on ONE file transfer, either direction.
 #:
-#: Both directions previously had no timeout at all -- ``download_file`` passed
-#: ``timeout_s=None`` and ``_exec_with_stdin`` took no timeout -- so a wedged guest
-#: hung the caller forever.  In a rollout fleet that presents as a stalled worker
-#: rather than as an error, which is the harder failure to diagnose.
+#: Without a ceiling a wedged guest hangs the caller forever, which in a rollout
+#: fleet presents as a stalled worker rather than as an error -- the harder
+#: failure to diagnose.
 DEFAULT_TRANSFER_TIMEOUT_S = 300.0
 
 #: Largest file this channel will move, in bytes.
@@ -454,14 +453,12 @@ class ApptainerSandboxProvider:
             stdin=stdin,
         )
 
-    #
     # BINARY-SAFE, and this is not incidental. The payloads that actually move
-    # through here are PNG screenshots and qcow2 overlays. An earlier version
-    # piped raw bytes through ``cat`` over ``apptainer exec`` and wrote the result
-    # with ``write_text``, which corrupts every non-text file: stdout is decoded
-    # as UTF-8 with ``errors="replace"``, so any invalid sequence becomes U+FFFD
-    # and the bytes are gone. Both directions now go through base64, at a ~33%
-    # size cost that is worth paying to make the channel total.
+    # through here are PNG screenshots and qcow2 overlays, and piping raw bytes
+    # over ``apptainer exec`` cannot carry them: stdout is decoded as UTF-8 with
+    # ``errors="replace"``, so any invalid sequence becomes U+FFFD and the bytes
+    # are gone. Both directions go through base64, at a ~33% size cost that is
+    # worth paying to make the channel total.
 
     async def upload_file(
         self,

@@ -1,11 +1,10 @@
-"""ITEM 6: ``ApptainerSandboxProvider`` -- entirely new, never executed.
+"""``ApptainerSandboxProvider``: binary safety and download integrity.
 
 The claim under test is BINARY SAFETY.  The payloads that move through here are
-PNG screenshots and qcow2 overlays, and the previous implementation piped raw
-bytes through ``cat`` and decoded stdout as UTF-8 with ``errors="replace"``, which
-turns every invalid sequence into U+FFFD irreversibly.  So every round trip below
-uses a payload containing invalid UTF-8, and asserts byte equality rather than
-"it worked".
+PNG screenshots and qcow2 overlays, and decoding guest stdout as UTF-8 with
+``errors="replace"`` turns every invalid sequence into U+FFFD irreversibly.  So
+every round trip below uses a payload containing invalid UTF-8, and asserts byte
+equality rather than "it worked".
 
 The second thing under test is that a payload which is NOT the file raises rather
 than persisting a truncated file that looks like a successful download.  ``exec``
@@ -274,8 +273,7 @@ def test_login_shell_stdout_noise_cannot_corrupt_a_download(
     """``exec`` runs ``bash -lc`` -- a LOGIN shell -- so the container's profile
     prints onto the very stdout the file is travelling on.
 
-    THE REPRODUCTION, because this was the subtlest defect in the package and the
-    reason the fix is a fence rather than a stricter decode:
+    Why the payload is fenced rather than merely decoded strictly:
 
         given  /tmp/p.bin containing exactly 1024 bytes (bytes(range(256)) * 4)
         and    a profile that emits ``printf 'MOTD'`` -- no newline
@@ -285,11 +283,10 @@ def test_login_shell_stdout_noise_cannot_corrupt_a_download(
                length stays a multiple of four
         and    the decode silently yields **1027 bytes**, not 1024
 
-    ``validate=True`` catches a banner containing a newline or any non-alphabet
-    character, which is why the ``Welcome to the container\\n`` case raised and
-    looked like adequate protection.  It cannot catch this one.  Fencing the
-    payload between two markers that are *not* base64-alphabet text makes the
-    channel total: either the bytes are exact, or the download raises.
+    ``validate=True`` rejects a banner containing a newline or any non-alphabet
+    character -- the ``Welcome to the container\\n`` case -- and nothing else.
+    Fencing the payload between two markers that are *not* base64-alphabet text
+    makes the channel total: either the bytes are exact, or the download raises.
     """
     payload = bytes(range(256)) * 4
     source = tmp_path / "in.bin"

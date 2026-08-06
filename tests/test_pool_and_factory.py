@@ -1,4 +1,4 @@
-"""ITEM 5: ``qemu_session_factory`` port pinning -- can two pooled desktops collide?
+"""``qemu_session_factory`` port pinning -- can two pooled desktops collide?
 
 Background, and the reason this ranks above the sandbox provider: the pool's
 ``flock`` lease was previously DECORATIVE.  ``QemuRuntime`` allocated its own ports

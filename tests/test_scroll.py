@@ -1,4 +1,4 @@
-"""ITEM 1: ``ir.scroll_deltas``, and the ``scroll`` lowering.
+"""``ir.scroll_deltas``, and the ``scroll`` lowering.
 
 Why this is first: every grammar emits ``scroll(0, dy)``.  A one-arity reader
 would take ``args[0]`` as the vertical ticks and lower every one of them to

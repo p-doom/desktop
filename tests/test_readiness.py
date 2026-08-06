@@ -1,4 +1,4 @@
-"""ITEM 4: the readiness heuristic, its Pillow sampler, and the ``luma_sampler`` seam.
+"""The readiness heuristic, its Pillow sampler, and the ``luma_sampler`` seam.
 
 The load-bearing claim is that ``thumbnail`` **averages** over a resampling filter
 and that the two thresholds (0.05 non-dark, 5.0 stddev) were calibrated against

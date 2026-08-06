@@ -1,4 +1,4 @@
-"""ITEM 9: the unioned keymap, its resolution order, and ``guest_button``'s strictness.
+"""The unioned keymap, its resolution order, and ``guest_button``'s strictness.
 
 Three predecessor tables were unioned, and they genuinely disagreed:
 

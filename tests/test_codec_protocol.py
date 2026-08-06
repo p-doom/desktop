@@ -1,4 +1,4 @@
-"""ITEM 8: ``parse_calls`` (the ``ast`` parser) and ``ActionSet.lower``'s cursor threading.
+"""``parse_calls`` (the ``ast`` parser) and ``ActionSet.lower``'s cursor threading.
 
 ``parse_calls`` replaced pyparsing's PEG with ``ast.parse`` in eval mode.  The
 security-shaped claim -- arguments are evaluated by ``literal_eval``, so no name

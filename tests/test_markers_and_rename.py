@@ -1,7 +1,7 @@
-"""ITEM 3: the ``RUNG1A_*`` -> ``DESKTOP_ENV_*`` / ``_r1a_*`` -> ``_de_*`` rename.
+"""The guards that keep marker and identifier names in one piece.
 
-~200 mechanical, unverified occurrences.  Two failure directions, and only one of
-them is loud:
+No old spelling (``RUNG1A_*``, ``_r1a_*``) may survive anywhere, and every emitted
+marker must have a parser.  Two failure directions, and only one of them is loud:
 
 * a surviving old name is *usually* loud (a NameError inside the guest program),
   but a surviving old name in a MARKER string is silent -- the host then waits for

@@ -1,4 +1,4 @@
-"""ITEM 2: the ``glide_to`` and ``drag`` lowerings, and drag's self-balancing.
+"""The ``glide_to`` and ``drag`` lowerings, and drag's self-balancing.
 
 ``glide_to`` must reach ``pyautogui.moveTo(..., duration=)`` -- a sweep, not a
 teleport, because some widgets only respond to the sweep.  ``drag`` must lower to

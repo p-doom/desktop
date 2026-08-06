@@ -1,4 +1,4 @@
-"""ITEM 11: ``ResetReceipt``, ``consume_receipt``, and ``_runtime_observation``.
+"""``ResetReceipt``, ``consume_receipt``, and ``_runtime_observation``.
 
 A reset that silently no-ops is indistinguishable from a working one unless
 something proves the guest rewound.  The attestation does three things, and each

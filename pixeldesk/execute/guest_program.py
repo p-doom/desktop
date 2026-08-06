@@ -1,8 +1,6 @@
 """Compile a tuple of ``Operation``s into exactly ONE ordered guest process.
 
-This is the most novel code in the package and the reason it exists.  It is
-lifted from ``osworld_parity/.../rung1/transport.py`` (lines 122-728), where it
-was validated on the pinned Ubuntu guest.  What it buys:
+What one process per action buys:
 
   * **One process per action.**  Not one per event.  A press, a move, and a
     release in one action cannot be interleaved with anything else, cannot pay
@@ -17,25 +15,23 @@ was validated on the pinned Ubuntu guest.  What it buys:
     character outside printable ASCII on the pinned image, so ``coalesced_type``
     falls back to a GTK clipboard paste for those payloads -- and only those,
     because that paste is itself a silent no-op in a terminal.  One predicate,
-    ``coalesced_type_mechanism``, decides; see
-    ``compile_unicode_coalesced_type``'s docstring for why, and for the
-    three-generation clipboard-backend history encoded in the two delay
-    constants.
+    ``coalesced_type_mechanism``, decides; ``compile_unicode_coalesced_type``'s
+    docstring has the reason.
   * **The click primitive is switchable.**  ``CLICK_BACKENDS`` exists because the
     release-side ``MotionNotify`` that PyAutoGUI emits is an *observable*
-    difference to some toolkits, and isolating it required emitting the exact
-    same press-side stream with and without it.
+    difference to some toolkits; the two backends emit an identical press-side
+    stream and differ only in that event.
 
-WHAT WAS DROPPED IN THE MOVE, and why: the ``move_relative`` kind.  It resolved a
-delta against ``pyautogui.position()`` *inside the guest*, which is a coordinate
-convention living in the executor -- exactly what this package forbids.  Relative
-grammars now resolve host-side in ``Codec.compile(text, geometry, cursor)`` and
-emit ``move_to``.  The resolution stays checkable: the receipt reports
-``cursor_before``, so a host cursor read that disagreed with the guest's is
-visible after the fact rather than silently absorbed.
+THERE IS NO RELATIVE MOVE KIND.  Resolving a delta against
+``pyautogui.position()`` inside the guest would put a coordinate convention in
+the executor, which this package forbids; relative grammars resolve host-side in
+``Codec.compile(text, geometry, cursor)`` and emit ``move_to``.  The resolution
+stays checkable because the receipt reports ``cursor_before``, so a host cursor
+read that disagreed with the guest's is visible after the fact rather than
+silently absorbed.
 
-WHAT WAS ADDED: the ``drag`` kind, lowered to press / move / release inside the
-single process, so a zero-extent drag survives resolution.
+``drag`` is lowered to press / move / release inside the single process, so a
+zero-extent drag survives resolution.
 """
 
 from __future__ import annotations
@@ -70,10 +66,9 @@ class InputAudit:
 BUTTON_MASKS = {"left": 1 << 8, "middle": 1 << 9, "right": 1 << 10}
 ALL_POINTER_BUTTON_MASK = sum(BUTTON_MASKS.values())
 
-# Coalesced-typing clipboard timings, named so that the CPU-contention
-# hypothesis for a lost paste is expressed in code rather than in magic
-# numbers.  The guest clipboard owner must outlive the paste by enough for the
-# target application to request the selection contents.
+# Coalesced-typing clipboard timings.  The guest clipboard owner must outlive
+# the paste by enough for the target application to request the selection
+# contents.
 CLIPBOARD_PASTE_DELAY_MS = 150
 CLIPBOARD_OWNER_LIFETIME_MS = 750
 # The two realisations of ``coalesced_type``.  See
@@ -190,26 +185,18 @@ def compile_unicode_coalesced_type(text: str) -> str:
     selection, proves its round trip, injects both chords and reports ``ok`` --
     while nothing is typed, and the *following* ``Return`` is swallowed as a
     literal ``^M`` by the pending quoted-insert.  A silent no-op with a clean
-    receipt.  That is what took the sign-of-life gate from a sealed 4/4 to 0/4
-    (jobs 138010/138012 against 138001-138004): all three typing cells died,
-    ``command_executed: false``, transcript ending ``SOLV2-LS$ ^M``, zero errors
-    anywhere.  ``pyautogui.write`` -- what the previous runner used for every
-    ``type`` action -- has no such chord and is restored here for the payloads
-    it can express.  ``Ctrl-Shift-V`` was rejected as the alternative: it is
-    right for gnome-terminal and wrong nearly everywhere else, which trades one
+    receipt.  ``pyautogui.write`` has no such chord, which is why it carries
+    every payload it can express.  ``Ctrl-Shift-V`` is not the fix: it is right
+    for gnome-terminal and wrong nearly everywhere else, trading one
     context-dependent bug for another.
 
-    Clipboard-backend history on the pinned image, oldest to newest:
-
-    1. ``pyperclip`` imports but raises at runtime; the guest has no xclip,
-       xsel or wl-copy backend.
-    2. Tk owns the X11 selection but only while the interpreter pumps its event
-       loop, and Tk's own ``clipboard_clear`` collapsed the editor selection in
-       VS Code/LibreOffice.
-    3. GTK (this version) owns the selection from a real GLib main loop, proves
-       the round trip before pasting, and re-asserts select-all immediately
-       before its single paste because taking clipboard ownership drops the
-       target widget's selection on the pinned image.
+    The pinned image has no ``xclip``, ``xsel`` or ``wl-copy``, so ``pyperclip``
+    imports but raises at runtime, and Tk owns the X11 selection only while the
+    interpreter pumps its event loop -- and its ``clipboard_clear`` collapses the
+    editor selection in VS Code/LibreOffice.  So the paste is driven from a real
+    GLib main loop: GTK owns the selection, proves the round trip before pasting,
+    and re-asserts select-all immediately before its single paste, because taking
+    clipboard ownership drops the target widget's selection on that image.
 
     Focus/type trajectories already emit their own Ctrl-A; the re-assertion
     inside the clipboard owner is deliberately redundant with it so the paste

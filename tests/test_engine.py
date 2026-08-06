@@ -1,4 +1,4 @@
-"""ITEM 7: the engine's transport contract, and the receipt it builds.
+"""The engine's transport contract, and the receipt it builds.
 
 The engine takes ONE transport shape: ``execute_atomic`` must be able to receive
 ``click_backend``, because the engine is what chooses it.  That is checked by

@@ -1,4 +1,4 @@
-# desktop-env
+# pixeldesk
 
 **Nothing in this repository imports a grammar, a codec, or anything from the
 model-training repositories it serves — and nothing here knows what an action
@@ -63,12 +63,11 @@ repository. That is the whole contract:
 ```python
 class Codec(Protocol):
     name: str
-    handlers: dict[str, Handler]           # grammar contributes dispatch
+    stop_sequences: tuple[str, ...]        # an attribute, not a method
     def parse(self, text) -> object: ...
     def format(self, action) -> str: ...   # the inverse: your SFT-target generator
     def compile(self, text, geometry, cursor) -> tuple[Operation, ...]: ...
     def describe(self) -> str: ...         # the system prompt, from docstrings
-    def stop_sequences(self) -> list[str]: ...
 ```
 
 There is deliberately **no coordinate-space enum anywhere in this package.**

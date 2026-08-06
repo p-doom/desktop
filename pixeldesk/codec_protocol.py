@@ -19,7 +19,7 @@ vendored rather than imported because BrowserGym's leaf is Playwright-bound and
 its ``main`` has been dormant since 2026-03-17.  Two substitutions were required
 to hold the zero-dependency floor:
 
-  * ``pyparsing``'s PEG for function calls -> ``ast.parse`` in eval mode, which
+  * ``pyparsing``'s PEG for function calls -> ``ast.parse`` in exec mode, which
     accepts strictly the same literal-argument call syntax and rejects more.
   * ``pyparsing``'s docstring parser -> a plain ``Examples:`` section split.
 

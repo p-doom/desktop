@@ -1,4 +1,4 @@
-"""ITEM 12: the two Apptainer definitions -- never built before this suite.
+"""The two Apptainer definitions.
 
 Everything cheap is checked statically here, because the expensive checks need a
 build.  The two ``needs_build`` tests at the end are the real ones, and the first

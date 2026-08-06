@@ -1,4 +1,4 @@
-"""ITEM 10: ``QemuRuntime.fork()``, ``_pick_accelerator`` / ``-accel tcg``, and QMP.
+"""``QemuRuntime.fork()``, ``_pick_accelerator`` / ``-accel tcg``, and QMP.
 
 Never run before.  Split into three tiers so as much as possible runs anywhere:
 
