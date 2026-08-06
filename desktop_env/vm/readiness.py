@@ -174,6 +174,8 @@ def wait_for_screenshot_ready(
     synchronous and importing ``asyncio`` to poll a VM is not a trade worth making
     for a caller that has no event loop.
     """
+    if poll_s <= 0:
+        raise ValueError(f"poll_s must be positive, got {poll_s}")
     started = time.monotonic()
     if initial_delay_s > 0:
         _log_wait(f"waiting {initial_delay_s:.1f}s before polling")
@@ -202,11 +204,9 @@ def wait_for_screenshot_ready(
             return screenshot
         structural_streak = _structural_streak(status, structural_streak)
         _raise_if_structurally_broken(status, detail, elapsed, structural_streak)
+        # Clamped so the last sleep lands ON the deadline; the loop head is the
+        # one place that ends the wait.
         sleep_s = min(poll_s, max(0.0, timeout_s - elapsed))
-        if sleep_s <= 0:
-            _log_wait(f"timed out after {elapsed:.1f}s ({detail})")
-            _raise_for_structural_timeout(status, detail, elapsed)
-            return screenshot
         _log_wait(
             f"not ready after {elapsed:.1f}s; status={status.value} ({detail}); "
             f"retrying in {sleep_s:.1f}s"
@@ -260,11 +260,6 @@ async def wait_for_desktop_ready(
 
         structural_streak = _structural_streak(status, structural_streak)
         _raise_if_structurally_broken(status, detail, elapsed_s, structural_streak)
-
-        if elapsed_s >= DESKTOP_READY_TIMEOUT_S:
-            _log_wait(f"timed out after {elapsed_s:.1f}s ({detail})")
-            _raise_for_structural_timeout(status, detail, elapsed_s)
-            return obs
 
         sleep_s = min(DESKTOP_READY_POLL_S, DESKTOP_READY_TIMEOUT_S - elapsed_s)
         _log_wait(

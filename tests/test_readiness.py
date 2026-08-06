@@ -444,6 +444,30 @@ def test_a_zero_timeout_raises_before_fetching_anything(fast_clock):
     assert calls == []
 
 
+@pytest.mark.parametrize("poll_s", [0.0, -1.0])
+def test_a_non_positive_poll_interval_is_refused_before_the_first_poll(poll_s):
+    """Rejected at the boundary rather than reinterpreted. The loop used to have
+    a second exit for ``sleep_s <= 0``, which silently turned ``poll_s=0`` into
+    "poll once, then give up" -- a different function from the one that was
+    asked for."""
+    with pytest.raises(ValueError, match="poll_s must be positive"):
+        wait_for_screenshot_ready(lambda: b"", poll_s=poll_s)
+
+
+def test_the_deadline_is_enforced_in_exactly_one_place(fast_clock):
+    """A fetch that overruns the deadline must be ended by the loop head, not by
+    a duplicate exit further down."""
+    def fetch() -> bytes:
+        fast_clock["now"] += 60.0
+        return _flat(0)
+
+    result = wait_for_screenshot_ready(
+        fetch, initial_delay_s=0.0, timeout_s=20.0, poll_s=5.0
+    )
+    assert result == _flat(0)
+    assert fast_clock["sleeps"] == [0.0]
+
+
 # --------------------------------------------------------------------------- #
 # The async wait, over an observation-returning environment
 # --------------------------------------------------------------------------- #
