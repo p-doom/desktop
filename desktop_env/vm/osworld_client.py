@@ -177,21 +177,25 @@ class OSWorldClient:
 
     # ------------------------------------------------------------ fifth wheel
     def cursor_position(self) -> tuple[int, int]:
-        """Where the guest thinks the pointer is.
+        """Where the guest thinks the pointer is, as a two-element JSON array.
 
         A FIFTH endpoint beyond the four above, kept deliberately: the shared
         codec contract is ``compile(text, geometry, cursor)``, so *something* has
         to supply the cursor as data, and the alternative -- round-tripping
         ``pyautogui.position()`` through ``/execute`` -- costs an interpreter
-        start per read and would make every step slower for no gain.  It is also
-        already part of the ``GuiTransport`` protocol.
+        start per read and would make every step slower for no gain.
+
+        One accepted shape, which is the shape the guest sends: this used to also
+        accept ``{"x": .., "y": ..}`` while ``HttpGuiTransport.cursor_position``
+        -- the *same* endpoint, on the same base URL, held by the same session --
+        accepted only the array.  Two readers of one endpoint disagreeing about
+        its wire format is how a guest change gets diagnosed as an intermittent
+        executor bug.
         """
         payload = self._request_json("GET", "/cursor_position")
-        if isinstance(payload, dict) and "x" in payload and "y" in payload:
-            return int(payload["x"]), int(payload["y"])
-        if isinstance(payload, (list, tuple)) and len(payload) == 2:
-            return int(payload[0]), int(payload[1])
-        raise GuestAgentError(f"invalid cursor position: {payload!r}")
+        if not isinstance(payload, list) or len(payload) != 2:
+            raise GuestAgentError(f"invalid cursor position: {payload!r}")
+        return int(payload[0]), int(payload[1])
 
     # --------------------------------------------------------------- helpers
     def screenshot_settled(

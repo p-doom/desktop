@@ -261,18 +261,18 @@ def test_a_non_200_accessibility_is_an_error(agent):
 # --------------------------------------------------------------------------- #
 
 
-def test_a_cursor_position_object_is_parsed(agent):
-    ROUTES["/cursor_position"] = _json_route({"x": 11, "y": 22})
-    assert agent.cursor_position() == (11, 22)
-
-
 def test_a_cursor_position_pair_is_parsed(agent):
     ROUTES["/cursor_position"] = _json_route([11, 22])
     assert agent.cursor_position() == (11, 22)
 
 
-@pytest.mark.parametrize("payload", [{"x": 1}, [1], [1, 2, 3], "11,22", None])
+@pytest.mark.parametrize(
+    "payload", [{"x": 11, "y": 22}, {"x": 1}, [1], [1, 2, 3], "11,22", None]
+)
 def test_a_malformed_cursor_position_is_an_error(agent, payload):
+    """Including the ``{"x", "y"}`` object: ``HttpGuiTransport`` reads the same
+    endpoint and has only ever accepted the array, so accepting both here made
+    two readers of one endpoint disagree about its wire format."""
     ROUTES["/cursor_position"] = _json_route(payload)
     with pytest.raises(GuestAgentError, match="invalid cursor position"):
         agent.cursor_position()
