@@ -69,10 +69,7 @@ CANONICAL_KINDS: dict[str, str] = {
     "mouse_up": "(button: str)",
     "key_down": "(key: str) -- a keymap.py key name",
     "key_up": "(key: str)",
-    "scroll": (
-        "(dx: int, dy: int) -- wheel ticks, +dy up, +dx right. A one-argument "
-        "(clicks,) form is also accepted and means (0, clicks)"
-    ),
+    "scroll": "(dx: int, dy: int) -- wheel ticks, +dy up, +dx right",
     "coalesced_type": (
         "(text: str) -- exact Unicode becomes input; the executor picks the "
         "mechanism (keystrokes or a clipboard paste) from the payload"
@@ -139,26 +136,23 @@ def scroll(dx: int, dy: int) -> Operation:
 
 
 def scroll_deltas(args: tuple) -> tuple[int, int]:
-    """Read a ``scroll`` operation's args, accepting either arity.
+    """Read a ``scroll`` operation's args.  Exactly ``(dx, dy)``, nothing else.
 
-    BOTH ARITIES ARE LIVE, and this function is the only place that decides
-    which is which -- so a producer and a consumer cannot disagree silently.
-
-    * ``(dx, dy)`` -- the two-axis form every codec emits.
-    * ``(clicks,)`` -- the one-axis form the lifted guest program and its tests
-      used, meaning vertical only.
-
-    Arity disambiguates them completely, which is why both can be accepted
-    without a mode flag.  The failure this guards against is real and was
+    The one place that reads them, so a producer and a consumer cannot disagree
+    silently.  The failure that motivates a single reader is real and was
     observed as a contract mismatch between layers: reading ``args[0]`` as
     vertical ticks turns a codec's ``scroll(0, 3)`` into ``scroll(0)`` -- a
     silent no-op on every scroll, with no error anywhere.
+
+    A one-axis ``(clicks,)`` form used to be accepted here too, disambiguated by
+    arity.  Nothing in this package emits it: the guest program traces
+    ``[dx, dy]``, every transport appends a two-axis operation, and ``scroll``
+    above builds one.  A grammar that emits a bare tick count now gets an error
+    rather than a second, differently-shaped contract to keep in agreement.
     """
-    if len(args) == 1:
-        return 0, int(args[0])
-    if len(args) >= 2:
-        return int(args[0]), int(args[1])
-    raise ValueError("scroll requires (dx, dy) or (clicks,)")
+    if len(args) != 2:
+        raise ValueError(f"scroll requires exactly (dx, dy), got {args!r}")
+    return int(args[0]), int(args[1])
 
 
 def coalesced_type(text: str) -> Operation:

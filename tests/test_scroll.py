@@ -1,4 +1,4 @@
-"""ITEM 1: ``ir.scroll_deltas`` dual arity, and the ``scroll`` lowering.
+"""ITEM 1: ``ir.scroll_deltas``, and the ``scroll`` lowering.
 
 Why this is first: every grammar emits ``scroll(0, dy)``.  A one-arity reader
 would take ``args[0]`` as the vertical ticks and lower every one of them to
@@ -7,6 +7,9 @@ with no error anywhere.  It would present as "the model never learned to scroll"
 
 So the assertions here are about the DIRECTION and MAGNITUDE that reach
 ``pyautogui``, not merely about the shape of the tuple.
+
+``(dx, dy)`` is the only accepted shape: anything else is a loud error, not a
+second contract two layers have to keep in agreement.
 """
 
 from __future__ import annotations
@@ -37,27 +40,12 @@ def test_two_arity_is_read_as_dx_dy(args, expected):
     assert scroll_deltas(args) == expected
 
 
-@pytest.mark.parametrize(
-    ("args", "expected"), [((3,), (0, 3)), ((-7,), (0, -7)), ((0,), (0, 0))]
-)
-def test_one_arity_still_means_vertical_only(args, expected):
-    """The lifted guest program's ``(clicks,)`` form must keep meaning vertical."""
-    assert scroll_deltas(args) == expected
-
-
-def test_the_two_arities_agree_on_the_same_vertical_scroll():
-    """``scroll(0, dy)`` and ``scroll(dy)`` are the same event, both directions."""
-    for dy in (1, -1, 12, -12):
-        assert scroll_deltas((0, dy)) == scroll_deltas((dy,)) == (0, dy)
-
-
-def test_zero_arity_raises_rather_than_scrolling_nothing():
-    with pytest.raises(ValueError):
-        scroll_deltas(())
-
-
-def test_extra_arity_is_truncated_not_misread():
-    assert scroll_deltas((1, 2, 3)) == (1, 2)
+@pytest.mark.parametrize("args", [(), (3,), (1, 2, 3)])
+def test_any_arity_but_two_is_refused(args):
+    """Refused, not guessed: a bare tick count and a truncated triple both used
+    to be read as something, which is a second contract to keep in agreement."""
+    with pytest.raises(ValueError, match="exactly"):
+        scroll_deltas(args)
 
 
 def test_constructor_and_reader_round_trip():
@@ -86,8 +74,9 @@ def test_the_grammar_shaped_call_lowers_to_a_real_vertical_scroll():
     assert "pyautogui.scroll(0)" not in _scroll_lines(ir.scroll(0, 3))
 
 
-def test_one_arity_lowers_identically_to_the_two_arity_form():
-    assert _scroll_lines(Operation("scroll", (3,))) == _scroll_lines(ir.scroll(0, 3))
+def test_a_one_arity_scroll_is_refused_by_the_compiler():
+    with pytest.raises(ValueError, match="exactly"):
+        _scroll_lines(Operation("scroll", (3,)))
 
 
 def test_horizontal_only_uses_hscroll_and_emits_no_vertical_event():
@@ -122,12 +111,6 @@ def test_executed_vertical_scroll_passes_the_signed_tick_count(dy, expected):
     ]
 
 
-def test_executed_one_arity_scroll_moves_the_same_direction():
-    run = run_guest_program((Operation("scroll", (4,)),))
-    assert run.pyautogui_calls == [["scroll", 4]]
-    assert run.trace() == [("scroll", [0, 4])]
-
-
 def test_executed_diagonal_scroll_moves_both_axes_with_the_right_signs():
     run = run_guest_program((ir.scroll(-6, 7),))
     assert run.pyautogui_calls == [["hscroll", -6], ["scroll", 7]]
@@ -145,7 +128,7 @@ def test_executed_zero_scroll_touches_no_wheel_but_is_still_reported():
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("args", [(0, 3), (0, -3), (3,), (4, 5), (-6, 7), (0, 0), (5, 0)])
+@pytest.mark.parametrize("args", [(0, 3), (0, -3), (4, 5), (-6, 7), (0, 0), (5, 0)])
 def test_recording_transport_trace_matches_the_guest_trace(recording, args):
     """The double's operation sequence is the reason it exists; it must match.
 
@@ -163,7 +146,7 @@ def test_recording_transport_trace_matches_the_guest_trace(recording, args):
 def test_recording_transport_scroll_total_counts_vertical_ticks(recording):
     recording.execute_atomic((ir.scroll(0, 3),))
     recording.execute_atomic((ir.scroll(9, -1),))
-    recording.execute_atomic((Operation("scroll", (5,)),))
+    recording.execute_atomic((ir.scroll(0, 5),))
     assert recording.audit.scroll_total == 3 - 1 + 5
 
 

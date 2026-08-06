@@ -318,7 +318,6 @@ CANONICAL_ACTIONS: dict[str, tuple] = {
     ),
     "scroll_up": (ir.scroll(0, 3),),
     "scroll_down": (ir.scroll(0, -3),),
-    "scroll_one_arity": (ir.Operation("scroll", (4,)),),
     "scroll_horizontal": (ir.scroll(5, 0),),
     "scroll_diagonal": (ir.scroll(-6, 7),),
     "scroll_zero": (ir.scroll(0, 0),),
