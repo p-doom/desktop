@@ -1275,28 +1275,14 @@ def process_group_id_for_pid(pid: int) -> int | None:
 
 
 def process_group_alive(process_group_id: int) -> bool:
-    proc_status = linux_process_group_has_live_members(process_group_id)
-    if proc_status is not None:
-        return proc_status
-    try:
-        os.killpg(process_group_id, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return linux_process_group_has_live_members(process_group_id)
 
 
-def linux_process_group_has_live_members(process_group_id: int) -> bool | None:
+def linux_process_group_has_live_members(process_group_id: int) -> bool:
     """Zombie-aware liveness check; ``killpg(0)`` alone reports zombies as alive."""
     proc_dir = Path("/proc")
-    if not proc_dir.is_dir():
-        return None
-    try:
-        entries = list(proc_dir.iterdir())
-    except OSError:
-        return None
-    for entry in entries:
+    assert proc_dir.is_dir(), "this supervisor only ever runs on Slurm/Linux nodes"
+    for entry in proc_dir.iterdir():
         if not entry.name.isdigit():
             continue
         stat = _linux_process_state_and_group(entry)
