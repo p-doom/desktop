@@ -325,13 +325,22 @@ def _refuse_oversized_transfer(name: str, size: int, max_bytes: int | None) -> N
         )
 
 
-async def _run(argv: list[str], *, timeout_s: float | None = None) -> SandboxExecResult:
+async def _run(
+    argv: list[str], *, timeout_s: float | None = None, stdin: bytes | None = None
+) -> SandboxExecResult:
     process = await asyncio.create_subprocess_exec(
-        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *argv,
+        stdin=None if stdin is None else asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_s)
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(stdin), timeout=timeout_s
+        )
     except TimeoutError:
+        # Kill it, or the pipe stays open and the caller waits on a process
+        # nobody is reading from.
         process.kill()
         await process.wait()
         return SandboxExecResult(None, None, -1, error_type="timeout")
@@ -426,6 +435,7 @@ class ApptainerSandboxProvider:
         env: dict[str, str] | None = None,
         timeout_s: int | float | None = None,
         user: str | int | None = None,
+        stdin: bytes | None = None,
     ) -> SandboxExecResult:
         if user is not None:
             # Apptainer runs as the invoking user by definition; honouring a
@@ -438,17 +448,16 @@ class ApptainerSandboxProvider:
         if cwd:
             argv += ["--pwd", cwd]
         argv += [f"instance://{handle.sandbox_id}", "bash", "-lc", command]
-        return await _run(argv, timeout_s=None if timeout_s is None else float(timeout_s))
+        return await _run(
+            argv,
+            timeout_s=None if timeout_s is None else float(timeout_s),
+            stdin=stdin,
+        )
 
     # ------------------------------------------------------------- transfers
     #
     # BINARY-SAFE, and this is not incidental. The payloads that actually move
     # through here are PNG screenshots and qcow2 overlays. An earlier version
-    #
-    # NOTE: both directions buffer the whole file, plus its ~33%-larger base64
-    # form, in host memory. That is fine for a screenshot and is NOT fine for a
-    # multi-GB qcow2; a caller moving an overlay wants a streaming path.
-    #
     # piped raw bytes through ``cat`` over ``apptainer exec`` and wrote the result
     # with ``write_text``, which corrupts every non-text file: stdout is decoded
     # as UTF-8 with ``errors="replace"``, so any invalid sequence becomes U+FFFD
@@ -469,7 +478,7 @@ class ApptainerSandboxProvider:
         payload = base64.b64encode(Path(source_path).read_bytes()).decode("ascii")
         # base64 -d reads the encoded text on stdin, so the bytes never traverse
         # the pipe undecoded and the shell never sees them.
-        result = await self._exec_with_stdin(
+        result = await self.exec(
             handle,
             f"base64 -d > {shlex.quote(target_path)}",
             stdin=payload.encode("ascii"),
@@ -557,45 +566,6 @@ class ApptainerSandboxProvider:
             ) from exc
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(raw)
-
-    async def _exec_with_stdin(
-        self,
-        handle: SandboxHandle,
-        command: str,
-        *,
-        stdin: bytes,
-        timeout_s: int | float | None = DEFAULT_TRANSFER_TIMEOUT_S,
-    ) -> SandboxExecResult:
-        """``exec`` with a byte payload on stdin, for uploads."""
-        argv = [
-            self.binary,
-            "exec",
-            f"instance://{handle.sandbox_id}",
-            "bash",
-            "-lc",
-            command,
-        ]
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(stdin), timeout=timeout_s
-            )
-        except TimeoutError:
-            # Kill it, or the pipe stays open and the caller waits on a process
-            # nobody is reading from.
-            process.kill()
-            await process.wait()
-            return SandboxExecResult(None, None, -1, error_type="timeout")
-        return SandboxExecResult(
-            stdout.decode("utf-8", errors="replace"),
-            stderr.decode("utf-8", errors="replace"),
-            int(process.returncode or 0),
-        )
 
     async def status(self, handle: SandboxHandle) -> SandboxStatus:
         result = await _run([self.binary, "instance", "list", "--json"])

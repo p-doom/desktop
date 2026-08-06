@@ -606,10 +606,11 @@ def test_an_upload_that_hangs_raises_a_timeout(provider, sandbox, tmp_path, gues
     async def hanging(handle, command, *, stdin, timeout_s=None):
         from desktop_env.vm.sandbox_protocol import SandboxExecResult
 
+        assert stdin, "the payload must reach the subprocess on stdin"
         assert timeout_s == 0.2, "the caller's timeout must reach the subprocess"
         return SandboxExecResult(None, None, -1, error_type="timeout")
 
-    provider._exec_with_stdin = hanging  # type: ignore[method-assign]
+    provider.exec = hanging  # type: ignore[method-assign]
     with pytest.raises(TimeoutError, match="upload of .* timed out"):
         run(provider.upload_file(sandbox, source, guest_path, timeout_s=0.2))
 
@@ -629,11 +630,12 @@ def test_a_download_that_hangs_raises_a_timeout(provider, sandbox, tmp_path, gue
     assert seen["timeout_s"] == 0.3, "the caller's timeout must reach the subprocess"
 
 
-@pytest.mark.parametrize(
-    "method", ["_exec_with_stdin", "exec"], ids=["upload-path", "download-path"]
-)
-def test_a_real_timeout_kills_the_subprocess(provider, sandbox, method):
+@pytest.mark.parametrize("stdin", [b"", None], ids=["upload-path", "download-path"])
+def test_a_real_timeout_kills_the_subprocess(provider, sandbox, stdin):
     """Exercises the real ``wait_for`` + ``kill`` path, not a stubbed result.
+
+    Both directions go through the same ``exec``; the only difference is whether
+    there is a payload on stdin.
 
     The guest command is ``exec sleep 30``, so bash REPLACES itself with sleep and
     the process being killed is the one holding stdout.  A plain ``sleep 30``
@@ -641,14 +643,7 @@ def test_a_real_timeout_kills_the_subprocess(provider, sandbox, method):
     ``await process.wait()`` then blocks on an EOF that never comes -- which is a
     real limitation of this timeout path, reported separately.
     """
-    if method == "exec":
-        result = run(provider.exec(sandbox, "exec sleep 30", timeout_s=0.5))
-    else:
-        result = run(
-            provider._exec_with_stdin(
-                sandbox, "exec sleep 30", stdin=b"", timeout_s=0.5
-            )
-        )
+    result = run(provider.exec(sandbox, "exec sleep 30", stdin=stdin, timeout_s=0.5))
     assert result.error_type == "timeout"
     assert result.return_code == -1
     assert result.stdout is None and result.stderr is None

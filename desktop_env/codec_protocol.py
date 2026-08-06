@@ -398,10 +398,19 @@ class ActionSet:
         return "\n".join(lines) + "\n"
 
     def to_tool_description(self, *, api: str = "openai", add_examples: bool = True) -> list[dict]:
-        """Tool-JSON for the OpenAI or Anthropic wire format."""
-        schema_key = {"openai": "parameters", "anthropic": "input_schema"}.get(
-            api, "parameters"
-        )
+        """Tool-JSON for the OpenAI or Anthropic wire format.
+
+        An unrecognised ``api`` is an error, not the OpenAI shape.  It used to
+        fall back to the ``parameters`` key while skipping ``"type": "function"``,
+        which is neither format: a typo produced a THIRD wire shape, served to a
+        model, with nothing anywhere saying the requested API was not understood.
+        """
+        schema_keys = {"openai": "parameters", "anthropic": "input_schema"}
+        if api not in schema_keys:
+            raise ValueError(
+                f"unsupported tool API {api!r}; expected one of {sorted(schema_keys)}"
+            )
+        schema_key = schema_keys[api]
         tools: list[dict] = []
         for spec in self.specs.values():
             description = spec.description

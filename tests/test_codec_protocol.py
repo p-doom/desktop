@@ -444,6 +444,13 @@ def test_tool_json_uses_the_right_schema_key_per_api():
     assert "Examples:\n- move_rel(10, 0)" in anthropic["description"]
 
 
+def test_an_unrecognised_tool_api_is_refused():
+    """It used to serve a third shape -- the OpenAI schema key without
+    ``"type": "function"`` -- for any unrecognised name, including a typo."""
+    with pytest.raises(ValueError, match="unsupported tool API"):
+        ActionSet([move_rel]).to_tool_description(api="openai ")
+
+
 def test_defaults_appear_in_the_derived_schema():
     (tool,) = ActionSet([click_only]).to_tool_description()
     assert tool["parameters"]["properties"]["button"]["default"] == "left"
