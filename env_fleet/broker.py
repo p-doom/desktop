@@ -729,7 +729,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         level=LOG_LEVELS[args.log_level],
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    config = resolve_gateway_config(args)
+    config = wait_for_registry_gateway(args)
     logging.info(
         "Starting rollout gateway on %s for %d backend(s)",
         config["bind_address"],
@@ -773,21 +773,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def resolve_gateway_config(args: argparse.Namespace) -> dict[str, Any]:
-    if args.registry:
-        return wait_for_registry_gateway(args)
-    if not args.bind_address:
-        raise ValueError("--bind-address is required without --registry")
-    if not args.backend_address:
-        raise ValueError("--backend-address is required without --registry")
-    return {
-        "bind_address": args.bind_address,
-        "backend_addresses": list(args.backend_address),
-        "backend_status_dirs": list(args.backend_status_dir) or None,
-    }
-
-
 def wait_for_registry_gateway(args: argparse.Namespace) -> dict[str, Any]:
+    """Wait for the fleet registry, honoring --bind-address/--backend-address overrides."""
     deadline = time.monotonic() + args.wait_timeout_s
     last_error = "registry not read yet"
     while time.monotonic() <= deadline:
