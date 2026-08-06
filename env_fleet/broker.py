@@ -426,6 +426,12 @@ class ZMQRolloutGateway:
             return
         route = self.routes_by_backend.get((backend.index, request_id))
         if route is None:
+            self.logger.info(
+                "Dropping late reply from %s for request %r: its route already "
+                "expired (backend quarantined or the frontend request timed out)",
+                backend.address,
+                request_id,
+            )
             return
         self.drop_route(route)
         await self.send_frontend_response(
