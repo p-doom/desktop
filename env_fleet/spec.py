@@ -15,7 +15,7 @@ import socket
 import subprocess
 from collections.abc import Callable, Mapping, MutableMapping
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Self
 
@@ -23,29 +23,9 @@ from typing import Any, Self
 # socket paths should use DesktopPoolConfig.runtime_dir when available.
 DEFAULT_DESKTOP_POOL_DIR = "pool"
 
-# Layout keys that env-fleet itself owns. Anything else found under the
-# registry's ``layout`` metadata is a consumer path and is carried verbatim.
-LAYOUT_KEYS = frozenset(
-    {
-        "run_id",
-        "run_base",
-        "run_root",
-        "registry_path",
-        "pool_root",
-        "pool_status_dir",
-        "logs_dir",
-        "configs_dir",
-    }
-)
-
 # ``name=/abs/path[,name=/abs/path]`` -- how a consumer injects its own paths
 # into the layout without env-fleet knowing what they mean.
 CONSUMER_PATHS_ENV = "ENV_FLEET_CONSUMER_PATHS"
-
-
-# --------------------------------------------------------------------------
-# path helpers
-# --------------------------------------------------------------------------
 
 
 def require_absolute_path(value: str | Path, *, name: str = "path") -> Path:
@@ -120,11 +100,6 @@ def _runtime_env_values(path: Path) -> dict[str, str]:
             raise ValueError(f"{path}: expected KEY=value for {key!r}")
         values[key] = value
     return values
-
-
-# --------------------------------------------------------------------------
-# env-server specs
-# --------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -260,11 +235,6 @@ def parse_node_addr(output: str) -> str | None:
     return None
 
 
-# --------------------------------------------------------------------------
-# run layout
-# --------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class FleetRunLayout:
     run_id: str
@@ -348,12 +318,12 @@ class FleetRunLayout:
         return cls.for_run(
             run_id=resolved_run_id,
             run_base=resolved_run_base,
-            run_root=_env_path(env, "OSWORLD_FLEET_RUN_ROOT"),
-            registry_path=_env_path(env, "OSWORLD_ENV_FLEET_REGISTRY"),
-            pool_root=_env_path(env, "OSWORLD_DESKTOP_POOL_ROOT"),
-            pool_status_dir=_env_path(env, "OSWORLD_DESKTOP_POOL_STATUS_DIR"),
-            logs_dir=_env_path(env, "OSWORLD_FLEET_LOGS_DIR"),
-            configs_dir=_env_path(env, "OSWORLD_FLEET_CONFIGS_DIR"),
+            run_root=env_path(env, "OSWORLD_FLEET_RUN_ROOT"),
+            registry_path=env_path(env, "OSWORLD_ENV_FLEET_REGISTRY"),
+            pool_root=env_path(env, "OSWORLD_DESKTOP_POOL_ROOT"),
+            pool_status_dir=env_path(env, "OSWORLD_DESKTOP_POOL_STATUS_DIR"),
+            logs_dir=env_path(env, "OSWORLD_FLEET_LOGS_DIR"),
+            configs_dir=env_path(env, "OSWORLD_FLEET_CONFIGS_DIR"),
             consumer_paths=parse_consumer_paths(env.get(CONSUMER_PATHS_ENV)),
         )
 
@@ -395,16 +365,7 @@ class FleetRunLayout:
         )
 
     def as_metadata(self) -> dict[str, str]:
-        metadata = {
-            "run_id": self.run_id,
-            "run_base": str(self.run_base),
-            "run_root": str(self.run_root),
-            "registry_path": str(self.registry_path),
-            "pool_root": str(self.pool_root),
-            "pool_status_dir": str(self.pool_status_dir),
-            "logs_dir": str(self.logs_dir),
-            "configs_dir": str(self.configs_dir),
-        }
+        metadata = {key: str(getattr(self, key)) for key in LAYOUT_KEYS}
         metadata.update(
             {key: str(value) for key, value in sorted(self.consumer_paths.items())}
         )
@@ -436,6 +397,15 @@ class FleetRunLayout:
 
     def node_logs_dir(self, node_rank: int) -> Path:
         return self.logs_dir / f"node_{node_rank:04d}"
+
+
+# Layout keys env-fleet itself owns, in field order. Anything else found under
+# the registry's ``layout`` metadata is a consumer path and is carried verbatim.
+# Derived from the dataclass so a new layout field cannot silently start being
+# read back as somebody's consumer path.
+LAYOUT_KEYS: tuple[str, ...] = tuple(
+    f.name for f in fields(FleetRunLayout) if f.name != "consumer_paths"
+)
 
 
 def parse_consumer_paths(value: str | None) -> dict[str, Path]:
@@ -477,17 +447,12 @@ def _path_value(value: object | None) -> Path | None:
     return Path(str(value))
 
 
-def _env_path(env: Mapping[str, str], *names: str) -> Path | None:
-    for name in names:
-        value = env.get(name)
-        if value:
-            return require_absolute_path(value, name=name)
-    return None
-
-
-# --------------------------------------------------------------------------
-# verifiers env-server config rendering
-# --------------------------------------------------------------------------
+def env_path(env: Mapping[str, str], name: str) -> Path | None:
+    """Read one absolute path override out of the environment."""
+    value = env.get(name)
+    if value is None:
+        return None
+    return require_absolute_path(value, name=name)
 
 
 def write_env_server_config(
