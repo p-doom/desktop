@@ -92,7 +92,6 @@ class HttpGuiTransport:
         self.timeout_s = timeout_s
         self.audit = InputAudit()
 
-    # ------------------------------------------------------------------ wire
     def _request_json(
         self, method: str, path: str, payload: dict[str, Any] | None = None
     ) -> Any:
@@ -126,7 +125,6 @@ class HttpGuiTransport:
     def execute_pyautogui(self, code: str) -> None:
         self.execute_argv(["python", "-c", self._PREFIX + code])
 
-    # ------------------------------------------------------------- the action
     def execute_atomic(
         self,
         operations: tuple[Operation, ...],
@@ -294,7 +292,6 @@ class HttpGuiTransport:
             elif operation.kind in {"coalesced_type", "ascii_type"}:
                 self.audit.typed_texts.append(str(operation.args[0]))
 
-    # ------------------------------------------------------- direct members
     def cursor_position(self) -> tuple[int, int]:
         value = self._request_json("GET", "/cursor_position")
         if not isinstance(value, list) or len(value) != 2:

@@ -30,9 +30,6 @@ from pixeldesk.vm.readiness import (
     wait_for_screenshot_ready,
 )
 
-# --------------------------------------------------------------------------- #
-# Frame fixtures
-# --------------------------------------------------------------------------- #
 
 
 def _png(image: Image.Image) -> bytes:
@@ -80,11 +77,6 @@ def _point_sampler(data: bytes, size=DEFAULT_THUMBNAIL_SIZE) -> list[int]:
     ]
 
 
-# --------------------------------------------------------------------------- #
-# The sampler itself
-# --------------------------------------------------------------------------- #
-
-
 def test_the_calibrated_thumbnail_size_is_unchanged():
     assert DEFAULT_THUMBNAIL_SIZE == (160, 90)
     assert R.DESKTOP_READY_MIN_NON_DARK_RATIO == 0.05
@@ -118,11 +110,6 @@ def test_the_sampler_raises_on_undecodable_bytes():
         png_luma_samples(b"not-an-image")
 
 
-# --------------------------------------------------------------------------- #
-# THE CALIBRATION GUARD
-# --------------------------------------------------------------------------- #
-
-
 def test_a_point_sampling_variant_would_silently_drift_off_calibration():
     """Same bytes, two samplers, two different verdicts.
 
@@ -148,11 +135,6 @@ def test_the_averaged_stddev_of_per_pixel_noise_sits_below_the_threshold():
     point_mean = sum(point) / len(point)
     point_stddev = (sum((v - point_mean) ** 2 for v in point) / len(point)) ** 0.5
     assert point_stddev > 10 * R.DESKTOP_READY_MIN_LUMA_STDDEV
-
-
-# --------------------------------------------------------------------------- #
-# The heuristic's verdicts
-# --------------------------------------------------------------------------- #
 
 
 def test_a_black_framebuffer_is_not_ready():
@@ -201,11 +183,6 @@ def test_both_statistics_are_required_not_either():
     assert desktop_screenshot_ready(_png(wider))[0] is ScreenshotStatus.READY
 
 
-# --------------------------------------------------------------------------- #
-# The four non-READY statuses, through the seam
-# --------------------------------------------------------------------------- #
-
-
 def test_missing_bytes_are_distinguished_from_a_dark_frame():
     for value in (None, "a string", 42, bytearray(b"x")):
         status, _ = desktop_screenshot_ready(value)
@@ -231,11 +208,6 @@ def test_the_seam_needs_no_image_file_at_all():
     not_ready = desktop_screenshot_ready(b"x", luma_sampler=lambda data: [200] * 100)
     assert ready[0] is ScreenshotStatus.READY
     assert not_ready[0] is ScreenshotStatus.NOT_READY
-
-
-# --------------------------------------------------------------------------- #
-# The synchronous wait
-# --------------------------------------------------------------------------- #
 
 
 @pytest.fixture
@@ -466,11 +438,6 @@ def test_the_deadline_is_enforced_in_exactly_one_place(fast_clock):
     )
     assert result == _flat(0)
     assert fast_clock["sleeps"] == [0.0]
-
-
-# --------------------------------------------------------------------------- #
-# The async wait, over an observation-returning environment
-# --------------------------------------------------------------------------- #
 
 
 @pytest.fixture

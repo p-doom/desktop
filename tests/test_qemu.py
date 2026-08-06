@@ -108,11 +108,6 @@ def _free_guest_port_block(count: int = 4) -> GuestPorts:
     pytest.skip("no free 4-port block in 43000..44000")
 
 
-# --------------------------------------------------------------------------- #
-# free_port
-# --------------------------------------------------------------------------- #
-
-
 def test_free_port_never_hands_out_the_same_port_twice_in_a_process():
     ports = {free_port() for _ in range(40)}
     assert len(ports) == 40
@@ -120,11 +115,6 @@ def test_free_port_never_hands_out_the_same_port_twice_in_a_process():
 
 def test_free_ports_are_in_the_ephemeral_range():
     assert 1024 < free_port() <= 65535
-
-
-# --------------------------------------------------------------------------- #
-# Accelerator selection
-# --------------------------------------------------------------------------- #
 
 
 def test_kvm_is_chosen_when_the_node_has_it(base_image, monkeypatch):
@@ -155,11 +145,6 @@ def test_an_explicit_accelerator_is_never_overridden(base_image, choice, monkeyp
 
 def test_kvm_available_matches_the_device_permissions():
     assert kvm_available() == os.access("/dev/kvm", os.R_OK | os.W_OK)
-
-
-# --------------------------------------------------------------------------- #
-# argv construction
-# --------------------------------------------------------------------------- #
 
 
 @pytest.fixture
@@ -256,11 +241,6 @@ def test_is_ready_is_false_before_start(base_image):
     assert QemuRuntime(image=base_image, accelerator="tcg").is_ready() is False
 
 
-# --------------------------------------------------------------------------- #
-# A boot that never becomes ready must not leak a VM
-# --------------------------------------------------------------------------- #
-
-
 def test_a_boot_timeout_tears_the_process_down(base_image, tmp_path, monkeypatch):
     """``_wait_ready`` raises ``TimeoutError``, not ``QemuError``, so it matched
     no handler in ``start`` and propagated with QEMU still running -- holding its
@@ -333,11 +313,6 @@ def test_stop_is_idempotent(base_image):
     runtime = QemuRuntime(image=base_image, accelerator="tcg")
     runtime.stop()
     runtime.stop()
-
-
-# --------------------------------------------------------------------------- #
-# QmpClient against a real unix socket
-# --------------------------------------------------------------------------- #
 
 
 @pytest.fixture
@@ -422,11 +397,6 @@ def test_hmp_returns_the_monitor_text(qmp_server):
 def test_connecting_to_a_socket_that_never_appears_times_out(tmp_path):
     with pytest.raises(QemuError, match="could not connect to QMP socket"):
         QmpClient(str(tmp_path / "never.sock"), connect_timeout_s=0.5)
-
-
-# --------------------------------------------------------------------------- #
-# fork() -- bookkeeping, against a stub qemu-img
-# --------------------------------------------------------------------------- #
 
 
 def _forkable(base_image, binary, tmp_path, **kwargs) -> QemuRuntime:
@@ -566,11 +536,6 @@ def test_the_fork_is_timed(base_image, stub_qemu_img, tmp_path):
     assert [label for label, _ in parent.timings] == ["cow_fork[alpha]"]
 
 
-# --------------------------------------------------------------------------- #
-# Checkpoint bookkeeping without a VM
-# --------------------------------------------------------------------------- #
-
-
 def test_checkpoint_bookkeeping_is_empty_before_anything_is_saved(base_image):
     runtime = QemuRuntime(image=base_image, accelerator="tcg")
     assert runtime.list_checkpoints() == ()
@@ -584,11 +549,6 @@ def test_deleting_an_unknown_checkpoint_is_a_no_op(base_image):
 
 def test_the_default_base_checkpoint_name_is_stable():
     assert BASE_CHECKPOINT == "desktop_env_base"
-
-
-# --------------------------------------------------------------------------- #
-# needs_vm: a real qemu-img
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.needs_vm
@@ -656,11 +616,6 @@ def test_the_qemu_binary_supports_both_accelerators(tmp_path):
     )
     assert result.returncode == 0
     assert "tcg" in result.stdout
-
-
-# --------------------------------------------------------------------------- #
-# needs_vm + kvm: a real boot and real snapshots
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.needs_vm

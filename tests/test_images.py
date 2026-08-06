@@ -43,11 +43,6 @@ def nonkvm_text() -> str:
     return NONKVM_DEF.read_text()
 
 
-# --------------------------------------------------------------------------- #
-# Both files
-# --------------------------------------------------------------------------- #
-
-
 def test_both_definitions_exist_and_are_packaged():
     assert KVM_DEF.is_file() and NONKVM_DEF.is_file() and IMAGES_README.is_file()
     pyproject = (IMAGES_DIR.parent.parent.parent / "pyproject.toml").read_text()
@@ -119,11 +114,6 @@ def test_the_nonkvm_test_section_gives_pyautogui_the_display_it_requires(nonkvm_
     assert "xvfb-run" in test_section.split("for binary in")[1].split(";")[0]
 
 
-# --------------------------------------------------------------------------- #
-# The KVM tier
-# --------------------------------------------------------------------------- #
-
-
 def test_the_kvm_tier_names_the_qemu_PACKAGE_not_the_binary(kvm_text):
     """THE DEFECT THIS FILE'S BUILD FOUND.
 
@@ -177,11 +167,6 @@ def test_the_kvm_tier_documents_its_runtime_requirements(kvm_text):
 
 def test_the_kvm_tier_needs_no_privileged_flags(kvm_text):
     assert "No --fakeroot and no privileged flags" in kvm_text
-
-
-# --------------------------------------------------------------------------- #
-# The non-KVM tier
-# --------------------------------------------------------------------------- #
 
 
 def test_the_nonkvm_tier_states_it_gives_no_parity(nonkvm_text):
@@ -289,11 +274,6 @@ def test_the_nonkvm_environment_section_is_valid_shell(nonkvm_text, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-# --------------------------------------------------------------------------- #
-# The two flagged risks
-# --------------------------------------------------------------------------- #
-
-
 def test_the_absent_browser_is_stated_as_a_fact_with_its_evidence(nonkvm_text):
     """The file used to flag a Chromium/Firefox profile risk while installing
     NEITHER browser, so the risk as written could not be triggered and a reader
@@ -353,11 +333,6 @@ def test_the_readme_build_commands_name_the_real_files():
     for definition in (KVM_DEF, NONKVM_DEF):
         assert definition.name in readme
         assert f"{definition.stem}.sif" in readme
-
-
-# --------------------------------------------------------------------------- #
-# needs_build: the real thing
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.needs_build

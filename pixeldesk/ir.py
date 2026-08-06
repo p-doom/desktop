@@ -52,14 +52,12 @@ class Operation:
         return cls(str(payload["kind"]), tuple(payload["args"]))
 
 
-# --------------------------------------------------------------------------- #
 # The canonical kinds, with their argument shapes.
 #
 # Every entry here is lowered by ``pixeldesk.execute.guest_program``.  The
 # coordinates in ``move_to`` and ``drag`` are absolute pixels; there is no
 # relative member, because resolution happens inside a codec's ``compile`` and
 # never inside this package.
-# --------------------------------------------------------------------------- #
 
 CANONICAL_KINDS: dict[str, str] = {
     "move_to": "(x: int, y: int) -- absolute pixel destination",

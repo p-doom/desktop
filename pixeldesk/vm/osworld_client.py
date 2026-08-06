@@ -44,7 +44,6 @@ class OSWorldClient:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = float(timeout_s)
 
-    # ------------------------------------------------------------------ wire
     def _request(
         self,
         method: str,
@@ -89,7 +88,6 @@ class OSWorldClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise GuestAgentError(f"guest {method} {path} returned non-JSON") from exc
 
-    # ------------------------------------------------------------- readiness
     def wait_ready(self, *, timeout_s: float = 180.0, poll_s: float = 2.0) -> None:
         """Poll ``/screenshot`` until it answers 200 with a body.
 
@@ -116,7 +114,6 @@ class OSWorldClient:
             f"guest agent at {self.base_url} not ready after {timeout_s}s"
         )
 
-    # ---------------------------------------------------- the four endpoints
     def screenshot(self) -> bytes:
         """Raw PNG bytes of the whole framebuffer.  Undecoded, on purpose."""
         status, body = self._request("GET", "/screenshot")
@@ -175,7 +172,6 @@ class OSWorldClient:
                     return str(payload[key])
         return body.decode("utf-8", errors="replace")
 
-    # ------------------------------------------------------------ fifth wheel
     def cursor_position(self) -> tuple[int, int]:
         """Where the guest thinks the pointer is, as a two-element JSON array.
 
@@ -197,7 +193,6 @@ class OSWorldClient:
             raise GuestAgentError(f"invalid cursor position: {payload!r}")
         return int(payload[0]), int(payload[1])
 
-    # --------------------------------------------------------------- helpers
     def screenshot_settled(
         self,
         *,

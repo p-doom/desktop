@@ -90,7 +90,6 @@ class Engine:
         self.verify_cursor_readback = verify_cursor_readback
         self.receipts: list[StepReceipt] = []
 
-    # ------------------------------------------------------------- geometry
     def geometry(self) -> DisplayGeometry:
         """Ask the guest how big its screen is, as a ``DisplayGeometry``."""
         width, height = self.transport.screen_size()
@@ -107,7 +106,6 @@ class Engine:
         """
         return self.geometry(), self.cursor()
 
-    # -------------------------------------------------------------- applying
     def apply(self, operations: tuple[Operation, ...]) -> StepReceipt:
         """Send one action -- one guest process -- and build its receipt."""
         host_before: tuple[int, int] | None = None
@@ -177,7 +175,6 @@ class Engine:
         geometry, cursor = self.resolution_context()
         return self.apply(tuple(codec.compile(text, geometry, cursor)))
 
-    # -------------------------------------------------------------- internals
     def _execute(self, operations: tuple[Operation, ...]) -> AtomicExecutionResult:
         return self.transport.execute_atomic(
             operations, click_backend=self.click_backend

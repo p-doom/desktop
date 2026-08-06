@@ -454,7 +454,6 @@ class ApptainerSandboxProvider:
             stdin=stdin,
         )
 
-    # ------------------------------------------------------------- transfers
     #
     # BINARY-SAFE, and this is not incidental. The payloads that actually move
     # through here are PNG screenshots and qcow2 overlays. An earlier version

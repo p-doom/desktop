@@ -37,11 +37,6 @@ def _geometry_source() -> str:
     return Path(geometry.__file__).read_text()
 
 
-# --------------------------------------------------------------------------- #
-# DisplayGeometry
-# --------------------------------------------------------------------------- #
-
-
 def test_a_bare_vm_has_no_window_inset():
     geometry = geometry_from_screen_size(1920, 1080)
     assert (geometry.desktop_width, geometry.desktop_height) == (1920, 1080)
@@ -57,11 +52,6 @@ def test_screen_size_is_coerced_to_int():
 def test_the_geometry_uses_slots_so_a_typo_cannot_add_a_field():
     with pytest.raises(AttributeError):
         FULL_HD.desktop_with = 1920  # type: ignore[attr-defined]
-
-
-# --------------------------------------------------------------------------- #
-# The 0..999 normalized grid
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -97,11 +87,6 @@ def test_the_normalized_grid_never_leaves_the_framebuffer():
             x, y = scale_normalized_coordinate(value, value, geometry)
             assert 0 <= x < geometry.desktop_width
             assert 0 <= y < geometry.desktop_height
-
-
-# --------------------------------------------------------------------------- #
-# The Anthropic downscale reversal
-# --------------------------------------------------------------------------- #
 
 
 def test_a_small_desktop_is_a_no_op():
@@ -163,11 +148,6 @@ def test_the_reversal_is_the_identity_exactly_at_the_limits():
     assert anthropic_scale_coordinates(5, 5, ANTHROPIC_MAX_LONG_EDGE, 100) == (5, 5)
 
 
-# --------------------------------------------------------------------------- #
-# Clamping and relative resolution
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     ("point", "expected"),
     [
@@ -207,11 +187,6 @@ def test_a_relative_resolution_from_a_clamped_position_does_not_drift_further():
 def test_relative_resolution_is_reversible_away_from_the_edges():
     cursor = resolve_relative((500, 500), 37, -21, FULL_HD)
     assert resolve_relative(cursor, -37, 21, FULL_HD) == (500, 500)
-
-
-# --------------------------------------------------------------------------- #
-# The invariant this module exists to protect
-# --------------------------------------------------------------------------- #
 
 
 def test_the_module_declares_no_coordinate_space_enumeration():

@@ -103,11 +103,6 @@ class Codec(Protocol):
         ...
 
 
-# --------------------------------------------------------------------------- #
-# Docstring-as-single-source skeleton (vendored from BrowserGym)
-# --------------------------------------------------------------------------- #
-
-
 @dataclass(frozen=True)
 class ActionSpec:
     """One action, as derived from its Python function."""

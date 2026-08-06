@@ -133,11 +133,6 @@ def wait_until(predicate, *, timeout_s: float = 10.0) -> bool:
     return predicate()
 
 
-# --------------------------------------------------------------------------- #
-# Config validation
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
@@ -162,11 +157,6 @@ def test_path_fields_are_coerced_to_paths():
     config = DesktopPoolConfig(root_dir="/tmp/x", status_dir="/tmp/y")
     assert isinstance(config.root_dir, Path)
     assert isinstance(config.status_dir, Path)
-
-
-# --------------------------------------------------------------------------- #
-# Prewarming
-# --------------------------------------------------------------------------- #
 
 
 def test_nothing_boots_until_start_is_called(pool_factory):
@@ -216,11 +206,6 @@ def test_the_pool_never_exceeds_max_sessions(pool_factory):
     assert len(pool_factory.built) == 3
     for handle in checked_out:
         handle.release()
-
-
-# --------------------------------------------------------------------------- #
-# Checkout / release
-# --------------------------------------------------------------------------- #
 
 
 def test_checkout_hands_out_a_ready_session(pool_factory):
@@ -309,11 +294,6 @@ def test_an_exception_inside_the_context_retires_the_session(pool_factory):
     assert pool.snapshot()["last_error"] is not None
 
 
-# --------------------------------------------------------------------------- #
-# Retirement
-# --------------------------------------------------------------------------- #
-
-
 def test_a_session_retires_after_its_rollout_budget(pool_factory):
     pool = pool_factory(min_ready_sessions=1, max_rollouts_per_session=2)
     pool.start()
@@ -365,11 +345,6 @@ def test_releasing_an_unknown_session_is_a_no_op(pool_factory):
     pool = pool_factory(min_ready_sessions=0)
     pool.start()
     pool.release("session-999999")
-
-
-# --------------------------------------------------------------------------- #
-# Stale lease reaping
-# --------------------------------------------------------------------------- #
 
 
 def test_a_lease_with_no_activity_is_reaped(tmp_path):
@@ -473,11 +448,6 @@ def test_a_ready_session_is_never_reaped(tmp_path):
         pool.close()
 
 
-# --------------------------------------------------------------------------- #
-# Startup failure and backoff
-# --------------------------------------------------------------------------- #
-
-
 def test_a_startup_failure_is_recorded_and_retried(pool_factory):
     pool = pool_factory(
         min_ready_sessions=1, startup_retry_backoff_s=0.05, startup_retry_backoff_max_s=0.1
@@ -555,11 +525,6 @@ def test_the_cooldown_is_reported_in_the_status(tmp_path):
         assert snapshot["retry_scheduled"] is True
     finally:
         pool.close()
-
-
-# --------------------------------------------------------------------------- #
-# The status file
-# --------------------------------------------------------------------------- #
 
 
 def test_the_status_file_is_written_and_is_valid_json(pool_factory):
@@ -649,11 +614,6 @@ def test_starting_sessions_appear_in_the_status_before_they_are_ready(tmp_path):
     finally:
         gate.set()
         pool.close()
-
-
-# --------------------------------------------------------------------------- #
-# Close
-# --------------------------------------------------------------------------- #
 
 
 def test_close_closes_every_session_and_releases_every_lease(pool_factory):
@@ -807,11 +767,6 @@ def test_a_wrong_target_log_symlink_is_refused(tmp_path):
     _ensure_symlink_dir(link, tmp_path / "real")  # idempotent
     with pytest.raises(RuntimeError, match="refusing to replace"):
         _ensure_symlink_dir(link, tmp_path / "other")
-
-
-# --------------------------------------------------------------------------- #
-# Concurrency
-# --------------------------------------------------------------------------- #
 
 
 def test_concurrent_checkouts_never_hand_the_same_session_to_two_callers(pool_factory):

@@ -42,11 +42,6 @@ SessionStatus = Literal["ready", "leased"]
 RetireReason = Literal["retired", "failed"]
 
 
-# --------------------------------------------------------------------------- #
-# Port leases
-# --------------------------------------------------------------------------- #
-
-
 @dataclass(frozen=True)
 class WorkerPorts:
     """One aligned block of host ports for a single desktop.
@@ -219,11 +214,6 @@ def allocate_worker_ports(
             ports=ports, slot=slot, workdir=workdir, _lock_file=lock_file, logdir=logdir
         )
     raise RuntimeError(f"no available port blocks under {root} from base {base}")
-
-
-# --------------------------------------------------------------------------- #
-# The pool
-# --------------------------------------------------------------------------- #
 
 
 class DesktopSessionEnv(Protocol):
@@ -601,7 +591,6 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
             self._retire_session_async(session, reason="failed")
         return len(stale_sessions)
 
-    # --------------------------------------------------------------- internals
     def _ensure_min_ready_locked(self) -> None:
         """Start background sessions until the ready-session floor is covered."""
         if self._closed or not self._started or self._startup_cooling_down_locked():

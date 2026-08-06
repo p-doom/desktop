@@ -82,10 +82,6 @@ class ScreenshotStatus(Enum):
     EMPTY = "empty"
 
 
-# --------------------------------------------------------------------------- #
-# Luma sampling (Pillow -- the package's only runtime dependency)
-# --------------------------------------------------------------------------- #
-
 #: Downsample target.  These two numbers are NOT arbitrary and must not be
 #: "tidied": the ratio and stddev thresholds above were calibrated against a
 #: 160x90 average-resampled thumbnail.  Changing this changes what "ready" means.
@@ -111,11 +107,6 @@ def png_luma_samples(
 
 
 LumaSampler = Callable[[bytes], list[int]]
-
-
-# --------------------------------------------------------------------------- #
-# The readiness heuristic (preserved)
-# --------------------------------------------------------------------------- #
 
 
 def desktop_screenshot_ready(

@@ -217,7 +217,6 @@ class QemuRuntime:
         self._checkpoints: dict[str, Checkpoint] = {}
         self._children: list[QemuRuntime] = []
 
-    # ----------------------------------------------------------- accelerator
     @staticmethod
     def _default_qmp_dir() -> Path:
         # QMP is a unix socket: the path caps at 108 bytes, so it must be short
@@ -247,7 +246,6 @@ class QemuRuntime:
         self.timings.append((label, seconds))
         _LOG.info("[qemu] %-28s = %6.2fs", label, seconds)
 
-    # --------------------------------------------------------------- lifecycle
     def start(self, *, attempts: int = 3) -> RuntimeState:
         """Boot the VM, retrying on a lost host-port race.
 
@@ -422,7 +420,6 @@ class QemuRuntime:
         self._qmp_path = None
         self._checkpoints.clear()
 
-    # ------------------------------------------------------------- readiness
     def is_ready(self, *, timeout_s: float = 0.0) -> bool:
         if self._process is None or self._ports is None:
             return False
@@ -461,7 +458,6 @@ class QemuRuntime:
             f"guest agent not ready after {timeout_s}s (:{server_port})"
         )
 
-    # ------------------------------------------------------------------- QMP
     def _monitor(self) -> QmpClient:
         if self._qmp_path is None:
             raise QemuError("runtime is not started")
@@ -477,7 +473,6 @@ class QemuRuntime:
         """QMP ``cont``: unfreeze a suspended runtime."""
         self._monitor().execute("cont")
 
-    # ----------------------------------------------------------- checkpoints
     def checkpoint(self, name: str) -> Checkpoint:
         """QEMU ``savevm`` -- full RAM + disk state into the running overlay."""
         started = time.time()
@@ -548,7 +543,6 @@ class QemuRuntime:
         self.ensure_base()
         return self.restore(self.base_checkpoint)
 
-    # ------------------------------------------------------------- CoW forks
     def fork(self, *, name: str | None = None) -> "QemuRuntime":
         """A new runtime on a copy-on-write overlay of this one's image.
 
@@ -607,7 +601,6 @@ class QemuRuntime:
         self._children.append(child)
         return child
 
-    # -------------------------------------------------------------- context
     def __enter__(self) -> "QemuRuntime":
         self.start()
         return self

@@ -86,11 +86,6 @@ def guest_path(tmp_path):
     return str(tmp_path / "guest-side.bin")
 
 
-# --------------------------------------------------------------------------- #
-# Lifecycle
-# --------------------------------------------------------------------------- #
-
-
 def test_create_starts_an_instance_and_reports_it_running(provider, image):
     handle = run(provider.create(SandboxSpec(image=str(image))))
     assert handle.provider_name == "apptainer"
@@ -144,11 +139,6 @@ def test_status_is_unknown_when_the_runtime_cannot_be_queried(tmp_path, monkeypa
     assert run(provider.status(handle)) is SandboxStatus.UNKNOWN
 
 
-# --------------------------------------------------------------------------- #
-# exec
-# --------------------------------------------------------------------------- #
-
-
 def test_exec_returns_stdout_stderr_and_the_exit_code(provider, sandbox):
     result = run(provider.exec(sandbox, "echo out; echo err >&2; exit 3"))
     assert result.stdout.strip() == "out"
@@ -178,11 +168,6 @@ def test_a_timeout_is_reported_as_a_timeout_not_an_exit_code(provider, sandbox):
     assert result.error_type == "timeout"
     assert result.return_code == -1
     assert result.stdout is None
-
-
-# --------------------------------------------------------------------------- #
-# THE BINARY ROUND TRIP
-# --------------------------------------------------------------------------- #
 
 
 def test_a_binary_payload_survives_upload_and_download_byte_for_byte(
@@ -270,11 +255,6 @@ def test_a_failed_download_persists_nothing(provider, sandbox, tmp_path):
     with pytest.raises(RuntimeError):
         run(provider.download_file(sandbox, "/tmp/definitely-absent", target))
     assert not target.exists()
-
-
-# --------------------------------------------------------------------------- #
-# A payload that is not the file
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -409,11 +389,6 @@ def test_the_fence_markers_are_not_base64_alphabet_text():
     assert _DOWNLOAD_BEGIN != _DOWNLOAD_END
 
 
-# --------------------------------------------------------------------------- #
-# ConnectableProvider: rebuild a handle in another process
-# --------------------------------------------------------------------------- #
-
-
 def test_a_descriptor_round_trips_into_a_live_handle(provider, sandbox):
     descriptor = run(provider.serialize_handle(sandbox, scope="rollout-7"))
     assert descriptor["provider"] == "apptainer"
@@ -468,11 +443,6 @@ def test_the_provider_satisfies_the_connectable_protocol():
     assert isinstance(provider, SupportsSandboxEndpoint)
 
 
-# --------------------------------------------------------------------------- #
-# Endpoints
-# --------------------------------------------------------------------------- #
-
-
 def test_a_declared_port_resolves_to_an_endpoint(provider, sandbox):
     endpoint = run(provider.endpoint(sandbox, 5000))
     assert endpoint.endpoint.endswith(":5000")
@@ -487,11 +457,6 @@ def test_an_undeclared_port_is_refused(provider, sandbox):
 def test_a_sandbox_declaring_no_ports_allows_any(provider, image):
     handle = run(provider.create(SandboxSpec(image=str(image))))
     assert run(provider.endpoint(handle, 4321)).endpoint.endswith(":4321")
-
-
-# --------------------------------------------------------------------------- #
-# The vendored protocol types
-# --------------------------------------------------------------------------- #
 
 
 def test_an_endpoint_must_be_an_absolute_url():
@@ -539,11 +504,6 @@ def test_string_ports_are_coerced():
     assert SandboxSpec(ports=["5000"]).ports == (5000,)
 
 
-# --------------------------------------------------------------------------- #
-# Against the real binary
-# --------------------------------------------------------------------------- #
-
-
 def test_apptainer_available_reflects_the_real_binary():
     import shutil
 
@@ -576,11 +536,6 @@ def test_a_binary_round_trip_through_a_real_apptainer_instance(tmp_path):
         assert run(provider.connect(descriptor)).sandbox_id == handle.sandbox_id
     finally:
         run(provider.close(handle))
-
-
-# --------------------------------------------------------------------------- #
-# Transfer bounds: a timeout in both directions, and a size cap
-# --------------------------------------------------------------------------- #
 
 
 def test_both_transfer_directions_are_bounded_by_default():

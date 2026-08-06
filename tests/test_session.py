@@ -130,11 +130,6 @@ def session(tmp_path):
         session.close()
 
 
-# --------------------------------------------------------------------------- #
-# The receipt's content
-# --------------------------------------------------------------------------- #
-
-
 def test_a_reset_produces_a_receipt_describing_it(session):
     transport, receipt = session.reset_with_receipt()
     assert isinstance(receipt, ResetReceipt)
@@ -206,11 +201,6 @@ def test_the_receipt_is_immutable(session):
     _, receipt = session.reset_with_receipt()
     with pytest.raises(dataclasses.FrozenInstanceError):
         receipt.reset_sequence = 99  # type: ignore[misc]
-
-
-# --------------------------------------------------------------------------- #
-# consume_receipt: MAC, single use, ordering
-# --------------------------------------------------------------------------- #
 
 
 def test_a_valid_receipt_is_consumed_once(session):
@@ -349,11 +339,6 @@ def test_resetting_an_unstarted_session_is_an_error(tmp_path):
         session.reset_with_receipt()
 
 
-# --------------------------------------------------------------------------- #
-# _runtime_observation
-# --------------------------------------------------------------------------- #
-
-
 def test_the_observation_is_stable_when_nothing_changes(session):
     assert session._runtime_observation() == session._runtime_observation()
 
@@ -407,11 +392,6 @@ def test_the_observation_does_not_introspect_provider_internals():
     assert "timings" not in source
 
 
-# --------------------------------------------------------------------------- #
-# Held input state must not cross an episode boundary
-# --------------------------------------------------------------------------- #
-
-
 def test_a_reset_hands_back_a_fresh_transport_with_an_empty_audit(session):
     before = session.transport
     before.audit.held_buttons.add("left")
@@ -444,11 +424,6 @@ def test_reset_to_checkpoint_creates_the_checkpoint_on_first_use(session):
     session.reset_to_checkpoint("tier2", setup=lambda transport: calls.append(transport))
     assert len(calls) == 1
     assert session.runtime.restores == ["base", "tier2"]
-
-
-# --------------------------------------------------------------------------- #
-# Metadata, isolation, teardown
-# --------------------------------------------------------------------------- #
 
 
 def test_metadata_is_written_at_start_and_finalised_at_close(session, tmp_path):
@@ -543,11 +518,6 @@ def test_a_session_id_is_unique_per_process_and_task():
     assert task_unique_session_id() != task_unique_session_id()
 
 
-# --------------------------------------------------------------------------- #
-# Small utilities the attestation depends on
-# --------------------------------------------------------------------------- #
-
-
 def test_canonical_json_is_order_independent():
     assert canonical_json({"b": 1, "a": 2}) == canonical_json({"a": 2, "b": 1})
     assert canonical_json({"a": 1}) == b'{"a":1}'
@@ -578,11 +548,6 @@ def test_sha256_file_matches_hashlib(tmp_path):
     assert sha256_file(path) == hashlib.sha256(b"\x00\xff" * 1000).hexdigest()
 
 
-# --------------------------------------------------------------------------- #
-# GuestScript's marker protocol
-# --------------------------------------------------------------------------- #
-
-
 def test_a_guest_script_reads_only_its_marker_line():
     """Guest stdout is shared with GTK warnings and X11 chatter."""
     script = GuestScript(client=None)  # type: ignore[arg-type]
@@ -608,11 +573,6 @@ def test_a_guest_script_reports_invalid_json_as_such():
     script = GuestScript(client=None)  # type: ignore[arg-type]
     with pytest.raises(SessionError, match="invalid JSON"):
         script.parse({"output": "DESKTOP_ENV_JSON={not json}"})
-
-
-# --------------------------------------------------------------------------- #
-# ProcessGroupReaper
-# --------------------------------------------------------------------------- #
 
 
 def test_the_reaper_ignores_its_own_group_and_invalid_ids():

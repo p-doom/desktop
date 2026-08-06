@@ -21,9 +21,6 @@ from pixeldesk.execute.guest_program import compile_atomic_guest_program
 from pixeldesk.ir import Operation, scroll_deltas
 from tests.support.guest_runner import run_guest_program
 
-# --------------------------------------------------------------------------- #
-# Arity resolution
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -50,11 +47,6 @@ def test_any_arity_but_two_is_refused(args):
 
 def test_constructor_and_reader_round_trip():
     assert scroll_deltas(ir.scroll(2, -9).args) == (2, -9)
-
-
-# --------------------------------------------------------------------------- #
-# The lowering: what actually reaches the guest's wheel
-# --------------------------------------------------------------------------- #
 
 
 def _scroll_lines(operation: Operation) -> list[str]:
@@ -93,11 +85,6 @@ def test_a_zero_scroll_emits_no_wheel_event_at_all():
     assert _scroll_lines(ir.scroll(0, 0)) == []
 
 
-# --------------------------------------------------------------------------- #
-# Executed, not read: the sign that reaches pyautogui
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(("dy", "expected"), [(3, 3), (-3, -3), (1, 1)])
 def test_executed_vertical_scroll_passes_the_signed_tick_count(dy, expected):
     """Positive ``dy`` is up, and the sign survives compilation and execution."""
@@ -121,11 +108,6 @@ def test_executed_zero_scroll_touches_no_wheel_but_is_still_reported():
     run = run_guest_program((ir.scroll(0, 0),))
     assert run.pyautogui_calls == []
     assert run.trace() == [("scroll", [0, 0])]
-
-
-# --------------------------------------------------------------------------- #
-# The transport double must agree with the guest, or it is not a double
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("args", [(0, 3), (0, -3), (4, 5), (-6, 7), (0, 0), (5, 0)])

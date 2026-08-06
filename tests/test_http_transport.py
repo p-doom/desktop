@@ -124,11 +124,6 @@ def guest_marker(operations, **kwargs) -> str:
     return _guest_stdout(operations, frozen)
 
 
-# --------------------------------------------------------------------------- #
-# The wire
-# --------------------------------------------------------------------------- #
-
-
 def test_a_trailing_slash_is_stripped_from_the_base_url():
     assert HttpGuiTransport("http://h:5000/").base_url == "http://h:5000"
 
@@ -174,11 +169,6 @@ def test_every_input_goes_out_as_python_dash_c(transport):
     assert request["body"]["shell"] is False
     assert request["body"]["command"][:2] == ["python", "-c"]
     assert request["body"]["command"][2].startswith("import pyautogui;")
-
-
-# --------------------------------------------------------------------------- #
-# The direct members
-# --------------------------------------------------------------------------- #
 
 
 def test_cursor_position_is_parsed_as_a_pair(transport):
@@ -360,11 +350,6 @@ def test_the_click_backend_is_threaded_into_the_compiled_program(transport):
     )
     assert result.click_backend == DIRECT_XTEST_CLICK_BACKEND
     assert DIRECT_XTEST_CLICK_BACKEND in sent_programs()[-1]
-
-
-# --------------------------------------------------------------------------- #
-# The payload validator: every refusal
-# --------------------------------------------------------------------------- #
 
 
 def _payload(**overrides) -> dict:

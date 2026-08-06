@@ -107,11 +107,6 @@ class OpaqueTransport(_BaseTransport):
     execute_atomic = staticmethod(min)  # a C builtin: inspect.signature raises
 
 
-# --------------------------------------------------------------------------- #
-# The transport contract, enforced at construction
-# --------------------------------------------------------------------------- #
-
-
 def test_recording_transport_satisfies_the_contract():
     assert Engine(RecordingTransport()).transport is not None
 
@@ -150,11 +145,6 @@ def test_the_contract_check_does_not_call_the_transport():
     assert transport.seen == []
 
 
-# --------------------------------------------------------------------------- #
-# Dispatch
-# --------------------------------------------------------------------------- #
-
-
 def test_a_switchable_transport_receives_the_configured_backend():
     transport = SwitchableBackendTransport()
     engine = Engine(transport, click_backend=DIRECT_XTEST_CLICK_BACKEND)
@@ -166,11 +156,6 @@ def test_the_default_backend_is_the_release_motion_one():
     transport = SwitchableBackendTransport()
     Engine(transport).apply((ir.move_to(1, 2),))
     assert transport.seen[0]["click_backend"] == PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND
-
-
-# --------------------------------------------------------------------------- #
-# THE CRITICAL CASE
-# --------------------------------------------------------------------------- #
 
 
 def test_a_genuine_typeerror_from_inside_a_transport_propagates():
@@ -194,11 +179,6 @@ def test_the_engine_never_wraps_execute_atomic_in_except_typeerror():
     source = inspect.getsource(Engine._execute)
     assert "except" not in source
     assert "TypeError" in inspect.getsource(_require_click_backend_parameter)
-
-
-# --------------------------------------------------------------------------- #
-# The receipt
-# --------------------------------------------------------------------------- #
 
 
 def test_a_successful_apply_builds_a_verified_receipt(recording):
@@ -275,11 +255,6 @@ def test_apply_or_raise_carries_the_receipt_as_evidence(recording):
 def test_apply_or_raise_returns_the_receipt_when_the_step_worked(recording):
     engine = Engine(recording)
     assert engine.apply_or_raise((ir.move_to(4, 5),)).ok is True
-
-
-# --------------------------------------------------------------------------- #
-# Geometry / resolution context
-# --------------------------------------------------------------------------- #
 
 
 def test_geometry_comes_from_the_transport(recording):

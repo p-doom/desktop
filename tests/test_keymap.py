@@ -33,9 +33,6 @@ from pixeldesk.execute.keymap import (
     key_transition,
 )
 
-# --------------------------------------------------------------------------- #
-# Vocabulary 1: rung1's Key<X>
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -43,11 +40,6 @@ from pixeldesk.execute.keymap import (
 )
 def test_vocabulary_one_key_x(name, expected):
     assert guest_key(name) == expected
-
-
-# --------------------------------------------------------------------------- #
-# Vocabulary 2: Num<N>/Digit<N>, punctuation, uppercase aliases
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize(
@@ -101,11 +93,6 @@ def test_vocabulary_two_case_insensitive_aliases(name, expected):
     assert guest_key(name) == expected
 
 
-# --------------------------------------------------------------------------- #
-# Vocabulary 3: bare lowercasing
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
@@ -121,11 +108,6 @@ def test_vocabulary_three_lowercasing(name, expected):
 @pytest.mark.parametrize("character", ["a", "A", "1", "/", "%", "z"])
 def test_a_single_character_maps_to_its_lowercase_self(character):
     assert guest_key(character) == character.lower()
-
-
-# --------------------------------------------------------------------------- #
-# The union covers all three, and the order is fixed
-# --------------------------------------------------------------------------- #
 
 
 def test_a_trajectory_recorded_in_any_vocabulary_round_trips():
@@ -302,11 +284,6 @@ def test_an_unknown_multicharacter_name_passes_through_lowercased():
     assert guest_key("F25") == "f25"  # past the F1..F24 regex, via the fallback
 
 
-# --------------------------------------------------------------------------- #
-# Pointer buttons: RAISES rather than defaulting
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize("name", ["left", "middle", "right"])
 def test_the_canonical_button_names_pass_through(name):
     assert guest_button(name) == name
@@ -376,11 +353,6 @@ def test_every_button_alias_resolves_to_a_pressable_button():
         assert guest_button(alias) in POINTER_BUTTONS
 
 
-# --------------------------------------------------------------------------- #
-# Operation constructors
-# --------------------------------------------------------------------------- #
-
-
 def test_a_chord_presses_in_order_and_releases_in_reverse():
     """Releasing ctrl before a in ctrl+a delivers a bare 'a' on the pinned guest."""
     operations = key_chord(["CTRL", "KeyA"])
@@ -427,9 +399,6 @@ def test_button_transition_maps_and_validates():
         button_transition("nope", pressed=True)
 
 
-# --------------------------------------------------------------------------- #
-# Held-key bookkeeping agrees with the lowering, by construction
-# --------------------------------------------------------------------------- #
 #
 # The press and the release of one key must balance even when a trajectory spells
 # the two halves differently.  Held state used to be keyed on the RAW operation

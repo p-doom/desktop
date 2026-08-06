@@ -29,9 +29,6 @@ import re
 
 from ..ir import Operation
 
-# --------------------------------------------------------------------------- #
-# Key names
-# --------------------------------------------------------------------------- #
 
 #: Explicit event-name -> guest key name.  Union of the three predecessor tables;
 #: keys are rdev / DOM ``KeyboardEvent.code`` spellings, values are the pinned
@@ -188,10 +185,6 @@ def guest_key(name: str) -> str:
     return stripped.lower()
 
 
-# --------------------------------------------------------------------------- #
-# Pointer buttons
-# --------------------------------------------------------------------------- #
-
 #: The only buttons the guest program can press.  ``BUTTON_MASKS`` in
 #: ``guest_program`` must stay in lockstep with this set.
 POINTER_BUTTONS: frozenset[str] = frozenset({"left", "middle", "right"})
@@ -235,11 +228,6 @@ def guest_button(name: str | int) -> str:
     if upper in BUTTON_ALIASES:
         return BUTTON_ALIASES[upper]
     raise KeymapError(f"unsupported pointer button: {name!r}")
-
-
-# --------------------------------------------------------------------------- #
-# Operation constructors
-# --------------------------------------------------------------------------- #
 
 
 def key_chord(keys: list[str] | tuple[str, ...]) -> tuple[Operation, ...]:

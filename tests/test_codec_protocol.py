@@ -30,11 +30,6 @@ from pixeldesk.geometry import DisplayGeometry, resolve_relative
 GEOMETRY = DisplayGeometry(desktop_width=1920, desktop_height=1080)
 
 
-# --------------------------------------------------------------------------- #
-# Actions used by the threading tests
-# --------------------------------------------------------------------------- #
-
-
 def move_rel(dx: int, dy: int, *, geometry, cursor):
     """Move the pointer by a delta.
 
@@ -73,11 +68,6 @@ def returns_none():
 
 
 ACTIONS = ActionSet([move_rel, drag_rel, glide_rel, click_only, nothing, returns_none])
-
-
-# --------------------------------------------------------------------------- #
-# parse_calls
-# --------------------------------------------------------------------------- #
 
 
 def test_a_bare_call_with_positional_and_keyword_literals_parses():
@@ -237,11 +227,6 @@ def test_parsed_call_renders_back_to_source():
     assert ParsedCall("f", (1, "a"), {"k": 2}).render() == "f(1, 'a', k=2)"
 
 
-# --------------------------------------------------------------------------- #
-# Cursor threading
-# --------------------------------------------------------------------------- #
-
-
 def test_successive_relative_moves_thread_the_cursor():
     operations = ACTIONS.lower(
         parse_calls("move_rel(10, 10)\nmove_rel(10, 10)\nmove_rel(10, 10)"),
@@ -334,11 +319,6 @@ def test_only_handlers_that_ask_for_context_receive_it():
     assert seen["neither"] is True
     assert seen["cursor"] == (3, 4)
     assert seen["geometry"] is GEOMETRY
-
-
-# --------------------------------------------------------------------------- #
-# ActionSet validation and self-description
-# --------------------------------------------------------------------------- #
 
 
 def test_an_unknown_action_name_is_rejected():
@@ -560,11 +540,6 @@ def test_annotation_types_are_derived_when_evaluated_eagerly():
     assert properties["count"]["type"] == "number"
     assert properties["flag"]["type"] == "boolean"
     assert properties["label"]["type"] == "string"
-
-
-# --------------------------------------------------------------------------- #
-# The protocol stays grammar-free
-# --------------------------------------------------------------------------- #
 
 
 def test_a_codec_satisfies_the_runtime_checkable_protocol_structurally():

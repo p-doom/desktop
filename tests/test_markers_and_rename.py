@@ -57,11 +57,6 @@ def _source_files() -> list[Path]:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Direction 1: no old name survives
-# --------------------------------------------------------------------------- #
-
-
 def test_no_old_rung1a_or_r1a_name_survives_anywhere():
     stale = re.compile(r"RUNG1A|_r1a_|_r1a\b|\br1a_", re.IGNORECASE)
     offenders = []
@@ -79,11 +74,6 @@ def test_the_generated_guest_program_uses_only_the_new_local_prefix():
     assert "_r1a" not in program
     assert "RUNG1A" not in program
     assert program.count("_de_") > 100, "the renamed locals should dominate the program"
-
-
-# --------------------------------------------------------------------------- #
-# Direction 2: marker parity between emitter and parser
-# --------------------------------------------------------------------------- #
 
 
 def test_every_desktop_env_marker_constant_is_both_emitted_and_parsed():
@@ -182,11 +172,6 @@ def test_the_resolve_guest_root_program_prints_the_marker_the_parser_wants():
     assert str(script.resolve_guest_root("n")) == "/home/u/n"
     assert GUEST_JSON_MARKER in recorded["program"]
     compile(recorded["program"], "<guest>", "exec")  # it is valid Python
-
-
-# --------------------------------------------------------------------------- #
-# The rename only truly holds if the program RUNS
-# --------------------------------------------------------------------------- #
 
 
 def test_a_program_containing_every_canonical_kind_executes_cleanly():

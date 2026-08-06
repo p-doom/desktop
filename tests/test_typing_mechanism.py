@@ -33,11 +33,6 @@ ASCII_TEXT = "printf SOLV2_COMPOUND_OK > /tmp/solv2_compound.txt"
 UNICODE_TEXT = "héllo ✓"
 
 
-# --------------------------------------------------------------------------- #
-# the predicate
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     "text",
     ["ls", ASCII_TEXT, "", " ", "~", "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}"],
@@ -54,11 +49,6 @@ def test_everything_pyautogui_write_would_drop_takes_the_clipboard(text):
 def test_the_mechanism_still_rejects_a_non_string_payload():
     with pytest.raises(TypeError, match="must be a string"):
         coalesced_type_mechanism(b"ls")  # type: ignore[arg-type]
-
-
-# --------------------------------------------------------------------------- #
-# the compiled program follows the predicate
-# --------------------------------------------------------------------------- #
 
 
 def test_the_ascii_route_writes_keystrokes_and_never_touches_the_clipboard():
@@ -96,11 +86,6 @@ def test_the_unicode_route_still_pastes_from_the_gtk_clipboard():
             "utf8_bytes": len(UNICODE_TEXT.encode("utf-8")),
         }
     ]
-
-
-# --------------------------------------------------------------------------- #
-# the effect: did the command execute
-# --------------------------------------------------------------------------- #
 
 
 class _GnomeTerminal:

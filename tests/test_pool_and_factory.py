@@ -98,11 +98,6 @@ def image(tmp_path) -> Path:
     return path
 
 
-# --------------------------------------------------------------------------- #
-# 1. lease.ports is threaded through
-# --------------------------------------------------------------------------- #
-
-
 def test_the_lease_ports_reach_the_runtime(port_base, tmp_path, image, monkeypatch):
     seen: dict = {}
 
@@ -199,11 +194,6 @@ def test_a_runtime_with_pinned_ports_never_calls_free_port(image, monkeypatch):
 def test_an_unpinned_runtime_does_allocate_its_own_ports(image):
     runtime = QemuRuntime(image=image, accelerator="tcg")
     assert runtime.pinned_ports is None
-
-
-# --------------------------------------------------------------------------- #
-# 2. two leases cannot overlap
-# --------------------------------------------------------------------------- #
 
 
 def test_two_leases_receive_disjoint_port_blocks(port_base, tmp_path):
@@ -356,11 +346,6 @@ def test_exhausting_every_slot_raises_rather_than_reusing_one(port_base, tmp_pat
             lease.release()
 
 
-# --------------------------------------------------------------------------- #
-# 3. boot retry is pinned to one attempt
-# --------------------------------------------------------------------------- #
-
-
 def test_boot_retry_is_pinned_to_one_attempt_when_ports_are_pinned(image, monkeypatch):
     """Retrying the same four ports would hide a real conflict behind a timeout."""
     attempts = []
@@ -401,11 +386,6 @@ def test_a_non_race_failure_is_not_retried_even_unpinned(image, monkeypatch):
     with pytest.raises(QemuError, match="something else"):
         QemuRuntime(image=image, accelerator="tcg").start()
     assert len(attempts) == 1
-
-
-# --------------------------------------------------------------------------- #
-# 4. require_single_task defaults to False for pooled sessions
-# --------------------------------------------------------------------------- #
 
 
 def test_the_pooled_factory_defaults_require_single_task_to_false():
@@ -549,11 +529,6 @@ def test_the_flag_only_gates_the_scheduler_task_count_check(tmp_path, monkeypatc
     relaxed.close()
 
 
-# --------------------------------------------------------------------------- #
-# Scratch is released with the lease
-# --------------------------------------------------------------------------- #
-
-
 def test_the_lease_workdir_becomes_the_session_scratch_root(
     port_base, tmp_path, image, monkeypatch
 ):
@@ -654,11 +629,6 @@ def test_a_lease_whose_scratch_is_not_empty_is_left_alone(port_base, tmp_path):
     leftover.write_text("a session did not clean up")
     lease.release()
     assert leftover.is_file(), "evidence of a failed cleanup must not be destroyed"
-
-
-# --------------------------------------------------------------------------- #
-# Factory configuration hygiene
-# --------------------------------------------------------------------------- #
 
 
 def test_a_missing_image_is_an_error_rather_than_a_guess(monkeypatch):

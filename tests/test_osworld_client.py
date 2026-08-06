@@ -89,19 +89,9 @@ def _json_route(payload, status=200):
     return (status, json.dumps(payload), "application/json")
 
 
-# --------------------------------------------------------------------------- #
-# Construction
-# --------------------------------------------------------------------------- #
-
-
 def test_a_trailing_slash_in_the_base_url_is_normalised():
     assert OSWorldClient("http://host:5000/").base_url == "http://host:5000"
     assert OSWorldClient("http://host:5000///").base_url == "http://host:5000"
-
-
-# --------------------------------------------------------------------------- #
-# /screenshot
-# --------------------------------------------------------------------------- #
 
 
 def test_a_screenshot_comes_back_as_undecoded_bytes(agent):
@@ -129,11 +119,6 @@ def test_an_unreachable_agent_raises_rather_than_hanging():
         client.screenshot()
 
 
-# --------------------------------------------------------------------------- #
-# /screen_size
-# --------------------------------------------------------------------------- #
-
-
 def test_screen_size_is_parsed(agent):
     ROUTES["/screen_size"] = _json_route({"width": 1920, "height": 1080})
     assert agent.screen_size() == (1920, 1080)
@@ -158,11 +143,6 @@ def test_an_http_error_status_is_reported_with_its_body(agent):
     ROUTES["/screen_size"] = (503, b"agent is restarting", "text/plain")
     with pytest.raises(GuestAgentError, match="returned 503"):
         agent.screen_size()
-
-
-# --------------------------------------------------------------------------- #
-# /execute
-# --------------------------------------------------------------------------- #
 
 
 def test_a_successful_execute_returns_the_agents_object(agent):
@@ -222,11 +202,6 @@ def test_execute_never_asks_the_agent_for_a_shell(agent):
     assert seen["payload"] == {"command": ["python", "-c", "print(1)"], "shell": False}
 
 
-# --------------------------------------------------------------------------- #
-# /accessibility
-# --------------------------------------------------------------------------- #
-
-
 def test_the_accessibility_tree_is_returned_as_text(agent):
     ROUTES["/accessibility"] = (200, "<tree/>", "text/xml")
     assert agent.accessibility() == "<tree/>"
@@ -256,11 +231,6 @@ def test_a_non_200_accessibility_is_an_error(agent):
         agent.accessibility()
 
 
-# --------------------------------------------------------------------------- #
-# /cursor_position
-# --------------------------------------------------------------------------- #
-
-
 def test_a_cursor_position_pair_is_parsed(agent):
     ROUTES["/cursor_position"] = _json_route([11, 22])
     assert agent.cursor_position() == (11, 22)
@@ -276,11 +246,6 @@ def test_a_malformed_cursor_position_is_an_error(agent, payload):
     ROUTES["/cursor_position"] = _json_route(payload)
     with pytest.raises(GuestAgentError, match="invalid cursor position"):
         agent.cursor_position()
-
-
-# --------------------------------------------------------------------------- #
-# Readiness
-# --------------------------------------------------------------------------- #
 
 
 def test_wait_ready_returns_once_the_agent_answers_with_a_body(agent):
@@ -313,11 +278,6 @@ def test_wait_ready_on_an_unreachable_agent_times_out():
     client = OSWorldClient("http://127.0.0.1:1", timeout_s=0.2)
     with pytest.raises(TimeoutError, match="not ready"):
         client.wait_ready(timeout_s=0.4, poll_s=0.05)
-
-
-# --------------------------------------------------------------------------- #
-# screenshot_settled
-# --------------------------------------------------------------------------- #
 
 
 def test_settled_with_zero_delays_is_exactly_one_screenshot(agent):

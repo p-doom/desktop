@@ -23,9 +23,6 @@ from pixeldesk.execute.guest_program import (
 )
 from tests.support.guest_runner import run_guest_program
 
-# --------------------------------------------------------------------------- #
-# glide_to
-# --------------------------------------------------------------------------- #
 
 
 def test_glide_lowers_to_a_timed_moveto():
@@ -138,11 +135,6 @@ def test_the_recording_double_reproduces_a_held_stroke(recording):
     assert result.ok is True
 
 
-# --------------------------------------------------------------------------- #
-# drag
-# --------------------------------------------------------------------------- #
-
-
 def test_drag_lowers_to_press_move_release_in_one_process():
     run = run_guest_program((ir.drag(100, 100, 400, 300),))
     assert run.returncode == 0, run.stderr
@@ -197,11 +189,6 @@ def test_drag_leaves_no_button_held_and_verifies_its_own_mask():
     assert run.payload["ok"] is True
 
 
-# --------------------------------------------------------------------------- #
-# expected_atomic_input_state: the drag branch is self-balancing
-# --------------------------------------------------------------------------- #
-
-
 def test_drag_leaves_the_held_button_set_unchanged():
     buttons, keys = expected_atomic_input_state(
         (ir.drag(1, 2, 3, 4),), initial_buttons=set(), initial_keys=set()
@@ -249,11 +236,6 @@ def test_a_drag_after_a_held_press_of_a_different_button_executes():
     )
     assert run.payload["ok"] is True, run.payload["error"]
     assert run.payload["observed_pointer_button_mask"] == 0
-
-
-# --------------------------------------------------------------------------- #
-# The recording double's drag/glide must match
-# --------------------------------------------------------------------------- #
 
 
 def test_recording_drag_matches_the_guest_trace(recording):

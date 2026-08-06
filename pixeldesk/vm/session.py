@@ -73,10 +73,6 @@ class SessionError(RuntimeError):
     """A session could not be isolated, started, reset, or torn down."""
 
 
-# --------------------------------------------------------------------------- #
-# Identity and small utilities
-# --------------------------------------------------------------------------- #
-
 _ID_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -146,11 +142,6 @@ def node_port_allocation_lock() -> Iterator[None]:
         os.close(fd)
 
 
-# --------------------------------------------------------------------------- #
-# Guest scripts: run Python in the guest and get a typed answer back
-# --------------------------------------------------------------------------- #
-
-
 class GuestScript:
     """Run a Python program in the guest and read one JSON line back.
 
@@ -216,11 +207,6 @@ print({self.marker!r}+json.dumps({{'root':chosen}}))
         if not isinstance(payload, dict) or "root" not in payload:
             raise SessionError(f"guest root resolution failed: {payload!r}")
         return PurePosixPath(str(payload["root"]))
-
-
-# --------------------------------------------------------------------------- #
-# Process-group teardown (from desktop/proxy.py -- the best of the five)
-# --------------------------------------------------------------------------- #
 
 
 class ProcessGroupReaper:
@@ -320,11 +306,6 @@ def process_group_of(pid: int) -> int | None:
         return None
 
 
-# --------------------------------------------------------------------------- #
-# Reset attestation
-# --------------------------------------------------------------------------- #
-
-
 @dataclass(frozen=True)
 class ResetReceipt:
     """Evidence that one reset really rewound the guest."""
@@ -346,11 +327,6 @@ class ResetReceipt:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-# --------------------------------------------------------------------------- #
-# The session
-# --------------------------------------------------------------------------- #
 
 
 class DesktopSession:
@@ -399,7 +375,6 @@ class DesktopSession:
         self._consumed_receipts: set[str] = set()
         self._started = False
 
-    # --------------------------------------------------------------- env vars
     def _set_environment(self, key: str, value: str) -> None:
         if key not in self._saved_environment:
             self._saved_environment[key] = os.environ.get(key)
@@ -413,7 +388,6 @@ class DesktopSession:
                 os.environ[key] = value
         self._saved_environment.clear()
 
-    # -------------------------------------------------------------- isolation
     def _prepare_isolation(self) -> None:
         if self.forbid_gpu_visibility and os.environ.get("CUDA_VISIBLE_DEVICES", ""):
             raise SessionError("GPU visibility is forbidden for this session")
@@ -466,7 +440,6 @@ class DesktopSession:
         # the only reliable placement boundary for it.
         self._set_environment("TMPDIR", str(self.scratch_dir))
 
-    # ---------------------------------------------------------------- start
     def start(self) -> HttpGuiTransport:
         if self._started:
             return self._require_transport()
@@ -496,7 +469,6 @@ class DesktopSession:
             raise SessionError("session is not started")
         return GuestScript(self.client)
 
-    # ---------------------------------------------------------------- reset
     def reset(self) -> HttpGuiTransport:
         """Reset to the clean checkpoint and consume the receipt for you."""
         transport, receipt = self.reset_with_receipt()
@@ -670,7 +642,6 @@ class DesktopSession:
         self._consumed_receipts.add(receipt_sha256)
         self._outstanding_receipt_sha256 = None
 
-    # -------------------------------------------------------------- metadata
     def _write_metadata(
         self, *, state_detail: dict[str, Any], ports: dict[str, int]
     ) -> None:
@@ -714,7 +685,6 @@ class DesktopSession:
         except (OSError, ValueError, TypeError, KeyError) as exc:
             errors.append(f"metadata finalization failed: {exc}")
 
-    # ------------------------------------------------------------------ close
     def close(self) -> None:
         """Tear down, collecting every failure instead of stopping at the first.
 
