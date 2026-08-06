@@ -324,6 +324,13 @@ CANONICAL_ACTIONS: dict[str, tuple] = {
     "ascii_type": (ir.ascii_type("hello world"),),
     "wait": (ir.wait(0.0),),
     "held_stroke": HELD_STROKE,
+    "raise_for_test": (ir.Operation("raise_for_test", ("boom",)),),
+    # The cleanup path, with real held state to release: the guest releases the
+    # key without tracing the release, so the double must not trace one either.
+    "raise_with_a_key_held": (
+        ir.key_down("ControlLeft"),
+        ir.Operation("raise_for_test", ("boom",)),
+    ),
 }
 
 
@@ -375,10 +382,8 @@ def test_the_double_and_the_guest_agree_on_the_lowering(name, recording):
 def test_the_invariant_covers_every_kind_the_executor_lowers():
     """The table above must not fall behind ``CANONICAL_KINDS``.
 
-    ``raise_for_test`` is excluded deliberately: it is fault injection, and its
-    cleanup path is where the double legitimately records more than the guest
-    traces (the guest releases keys without tracing the releases).  That
-    divergence is documented rather than asserted away.
+    ``coalesced_type`` is the one exclusion: it needs the fake GTK stack in the
+    guest subprocess, so it has its own test below rather than a table entry.
     """
     from desktop_env.ir import CANONICAL_KINDS
 
@@ -387,7 +392,7 @@ def test_the_invariant_covers_every_kind_the_executor_lowers():
         for operations in CANONICAL_ACTIONS.values()
         for operation in operations
     }
-    expected = set(CANONICAL_KINDS) - {"raise_for_test", "coalesced_type"}
+    expected = set(CANONICAL_KINDS) - {"coalesced_type"}
     assert expected <= covered, f"uncovered kinds: {sorted(expected - covered)}"
 
 

@@ -643,14 +643,14 @@ class RecordingTransport:
             if failure_kind is None:
                 failure_kind = "infrastructure"
             cleanup_attempted = True
-            for key in sorted(self.audit.held_keys, reverse=True):
-                self.audit.operations.append(Operation("key_up", (key,)))
+            # The guest's cleanup calls ``keyUp``/``mouseUp`` for everything it
+            # touched WITHOUT tracing the releases, so neither does this.  The
+            # double exists so a test can assert the exact sequence the guest
+            # produces, and the failure path is one a test needs to compare too:
+            # recording releases here put operations in the trace that no guest
+            # ever reports, which is a divergence in the one direction the double
+            # is not allowed to have.
             self.audit.held_keys.clear()
-            for button in sorted(self.audit.held_buttons):
-                try:
-                    self.mouse_up(button)
-                except BaseException:
-                    self.audit.held_buttons.discard(button)
             self.audit.held_buttons.clear()
         final_mask = pointer_mask_for_buttons(self.audit.held_buttons)
         return AtomicExecutionResult(
