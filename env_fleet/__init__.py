@@ -25,7 +25,6 @@ from env_fleet.registry import (
     EnvFleetRegistry,
     read_registry,
     read_registry_if_ready,
-    read_registry_optional,
     upsert_registry,
 )
 from env_fleet.slurm import (
@@ -72,7 +71,6 @@ __all__ = [
     "query_squeue",
     "read_registry",
     "read_registry_if_ready",
-    "read_registry_optional",
     "read_statuses",
     "readiness_summary",
     "render_consumer_paths",

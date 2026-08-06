@@ -12,7 +12,7 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self, overload
 
 from env_fleet.spec import EnvServerSpec
 
@@ -60,19 +60,37 @@ class EnvFleetRegistry:
         }
 
 
-def read_registry(path: Path) -> EnvFleetRegistry:
+@overload
+def read_registry(
+    path: Path, *, if_missing: Literal["raise"] = "raise"
+) -> EnvFleetRegistry: ...
+
+
+@overload
+def read_registry(
+    path: Path, *, if_missing: Literal["none"]
+) -> EnvFleetRegistry | None: ...
+
+
+def read_registry(
+    path: Path,
+    *,
+    if_missing: Literal["raise", "none"] = "raise",
+) -> EnvFleetRegistry | None:
+    """Read the fleet registry, always raising on a corrupt file.
+
+    ``if_missing`` selects only how a missing file is handled: ``"raise"``
+    (the default) lets ``FileNotFoundError`` propagate; ``"none"`` returns
+    ``None`` instead, for callers that treat "fleet not started yet" as a
+    normal, expected state rather than an error.
+    """
+    if if_missing == "none" and not path.exists():
+        return None
     with path.open(encoding="utf-8") as handle:
         payload = json.load(handle)
     if not isinstance(payload, Mapping):
         raise ValueError(f"registry is not a JSON object: {path}")
     return EnvFleetRegistry.from_dict(payload)
-
-
-def read_registry_optional(path: Path) -> EnvFleetRegistry | None:
-    """Return ``None`` for a missing registry, but still raise on a corrupt one."""
-    if not path.exists():
-        return None
-    return read_registry(path)
 
 
 def read_registry_if_ready(path: Path) -> tuple[EnvFleetRegistry | None, str | None]:

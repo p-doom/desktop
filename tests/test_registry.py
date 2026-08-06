@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from env_fleet.registry import read_registry, read_registry_optional, upsert_registry
+from env_fleet.registry import read_registry, upsert_registry
 from env_fleet.spec import FleetRunLayout, make_server_specs
 from env_fleet.supervise import read_registry_for_status, registry_path_for_args
 
@@ -89,7 +89,7 @@ def test_registry_helpers_keep_missing_distinct_from_corrupt(tmp_path):
         )
         == tmp_path / "custom-registry.json"
     )
-    assert read_registry_optional(layout.registry_path) is None
+    assert read_registry(layout.registry_path, if_missing="none") is None
 
     registry, error = read_registry_for_status(layout.registry_path)
     assert registry is None
@@ -99,7 +99,7 @@ def test_registry_helpers_keep_missing_distinct_from_corrupt(tmp_path):
     layout.registry_path.write_text("{", encoding="utf-8")
 
     with pytest.raises(json.JSONDecodeError):
-        read_registry_optional(layout.registry_path)
+        read_registry(layout.registry_path, if_missing="none")
 
     registry, error = read_registry_for_status(layout.registry_path)
     assert registry is None

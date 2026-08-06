@@ -44,7 +44,6 @@ from env_fleet.registry import (
     EnvFleetRegistry,
     read_registry,
     read_registry_if_ready,
-    read_registry_optional,
     upsert_registry,
 )
 from env_fleet.slurm import (
@@ -1778,7 +1777,7 @@ def format_status_report(
 
 
 def cancel(args: argparse.Namespace) -> int:
-    registry = read_registry_optional(registry_path_for_args(args))
+    registry = read_registry(registry_path_for_args(args), if_missing="none")
     job_id = args.job_id
     if job_id is None and registry is not None:
         job_id = slurm_job_id_from_registry(registry)
