@@ -121,7 +121,7 @@ class FakeSocket:
     def __init__(self) -> None:
         self.sent: list[list[bytes]] = []
 
-    def send_multipart(self, frames: list[bytes]) -> None:
+    async def send_multipart(self, frames: list[bytes]) -> None:
         self.sent.append(frames)
 
 

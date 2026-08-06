@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import inspect
 import logging
 import os
 import time
@@ -680,9 +679,7 @@ class ZMQRolloutGateway:
 async def send_multipart(socket: Any | None, frames: list[bytes]) -> None:
     if socket is None:
         raise zmq.ZMQError(zmq.ENOTSOCK)
-    result = socket.send_multipart(frames)
-    if inspect.isawaitable(result):
-        await result
+    await socket.send_multipart(frames)
 
 
 def failed_response_bytes(error: str) -> bytes:
