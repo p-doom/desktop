@@ -79,10 +79,3 @@ python -m env_fleet.readiness --registry "$OSWORLD_ENV_FLEET_REGISTRY"
 python -m env_fleet.supervise status --run-id <run-id>
 python -m env_fleet.supervise cancel --run-id <run-id>
 ```
-
-## Provenance
-
-Mechanically extracted from the `reinforcement-learning` monorepo
-(`rl/runtime/fleet/*`, `rl/runtime/zmq_gateway.py`,
-`scripts/{supervise_osworld_env_fleet,osworld_fleet,prepare_env_fleet,wait_env_fleet_ready,render_prime_rl_fleet_config,zmq_rollout_gateway}.py`).
-Logic was moved, not rewritten.

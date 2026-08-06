@@ -1,7 +1,6 @@
 """Cross-node ZMQ broker that routes on leased-machine capacity.
 
-DO NOT DELETE THIS AS A DUPLICATE OF THE ``verifiers`` BROKER. It is a
-complement, not a copy:
+It complements the ``verifiers`` broker rather than duplicating it:
 
 * ``verifiers``' own broker binds ``ipc://`` sockets per worker behind a single
   ``tcp://127.0.0.1:5000`` frontend. It is single-node by construction.

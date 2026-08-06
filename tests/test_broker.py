@@ -4,21 +4,10 @@ Two groups:
 
 * the env-fleet-specific surface — the supervisor's broker entrypoint, resolving
   cross-node backends out of registry gateway metadata, and the capacity ranking;
-* the gateway routing suite ported verbatim from the source repo's
-  ``tests/test_zmq_gateway.py`` (576 lines): request routing, frontend
-  request-id preservation, health probing, backend quarantine on timeout,
-  pending-request queueing/expiry, and the capacity-reservation invariants that
-  stop the broker oversending a stale ready slot.
-
-The ONLY edit the ported suite needed was the import path
-(``rl.runtime.zmq_gateway`` -> ``env_fleet.broker``). ``ZMQRolloutGateway``'s
-keyword constructor, its ``frontend`` / ``backends`` /
-``pending_frontend_requests`` / ``routes_by_frontend`` / ``routes_by_backend``
-state, ``forward_request``, ``handle_frontend_message``,
-``handle_backend_message``, ``poll_backend_health``,
-``refresh_backend_capacity``, ``drain_pending_requests``,
-``expire_pending_requests``, ``expire_routes``, ``select_backend`` and the four
-error constants all moved unchanged, so no assertion was adapted.
+* the gateway routing surface: request routing, frontend request-id
+  preservation, health probing, backend quarantine on timeout, pending-request
+  queueing/expiry, and the capacity-reservation invariants that stop the broker
+  oversending a stale ready slot.
 """
 
 from __future__ import annotations
