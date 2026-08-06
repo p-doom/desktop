@@ -25,6 +25,7 @@ from typing import Any
 from ..geometry import DisplayGeometry, geometry_from_screen_size
 from ..ir import Operation
 from .guest_program import (
+    CLICK_BACKENDS,
     PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
     AtomicExecutionResult,
     ExecutionError,
@@ -78,11 +79,16 @@ class Engine:
         click_backend: str = PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
         verify_cursor_readback: bool = True,
     ) -> None:
+        if click_backend not in CLICK_BACKENDS:
+            raise ExecutionError(
+                f"unsupported click backend: {click_backend!r}; "
+                f"expected one of {sorted(CLICK_BACKENDS)}"
+            )
+        _require_click_backend_parameter(transport)
         self.transport = transport
         self.click_backend = click_backend
         self.verify_cursor_readback = verify_cursor_readback
         self.receipts: list[StepReceipt] = []
-        self._click_backend_supported = self._accepts_click_backend()
 
     # ------------------------------------------------------------- geometry
     def geometry(self) -> DisplayGeometry:
@@ -172,35 +178,10 @@ class Engine:
         return self.apply(tuple(codec.compile(text, geometry, cursor)))
 
     # -------------------------------------------------------------- internals
-    def _accepts_click_backend(self) -> bool:
-        """Whether this transport's ``execute_atomic`` takes ``click_backend``.
-
-        Decided by inspecting the signature once, at construction, rather than by
-        calling and catching ``TypeError``.  A ``try/except TypeError`` around the
-        call would also swallow a genuine ``TypeError`` raised from *inside* the
-        transport -- turning a real bug into a silent retry with different
-        arguments, which is the worst possible way to learn about it.
-        """
-        try:
-            signature = inspect.signature(self.transport.execute_atomic)
-        except (TypeError, ValueError):  # C-implemented or otherwise opaque
-            return False
-        parameters = signature.parameters
-        if "click_backend" in parameters:
-            return True
-        return any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
-        )
-
     def _execute(self, operations: tuple[Operation, ...]) -> AtomicExecutionResult:
-        if self._click_backend_supported:
-            return self.transport.execute_atomic(  # type: ignore[call-arg]
-                operations, click_backend=self.click_backend
-            )
-        # A transport that pins one click backend takes no such keyword. Any
-        # TypeError from here on is a real bug and propagates.
-        return self.transport.execute_atomic(operations)
+        return self.transport.execute_atomic(
+            operations, click_backend=self.click_backend
+        )
 
     def _verify(
         self,
@@ -210,6 +191,39 @@ class Engine:
     ) -> bool:
         if not self.verify_cursor_readback:
             return True
-        if host_before is None or host_after is None:
-            return True
+        assert host_before is not None and host_after is not None
         return host_before == result.cursor_before and host_after == result.cursor_after
+
+
+def _require_click_backend_parameter(transport: GuiTransport) -> None:
+    """Refuse a transport whose ``execute_atomic`` cannot receive the backend.
+
+    The engine owns the click backend, so a transport that cannot receive it
+    would make an explicit ``click_backend=`` a silent no-op: the caller asks for
+    one XTest stream and the transport emits whichever one it pinned.
+
+    Decided by inspecting the signature at construction rather than by calling and
+    catching ``TypeError``.  A ``try/except TypeError`` around the call would also
+    swallow a genuine ``TypeError`` raised from *inside* the transport -- turning a
+    real bug into a silent retry with different arguments, which is the worst
+    possible way to learn about it.
+    """
+    try:
+        signature = inspect.signature(transport.execute_atomic)
+    except (TypeError, ValueError) as exc:  # C-implemented or otherwise opaque
+        raise ExecutionError(
+            "transport.execute_atomic has no inspectable signature, so the engine "
+            "cannot confirm it accepts click_backend"
+        ) from exc
+    parameters = signature.parameters
+    if "click_backend" in parameters:
+        return
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return
+    raise ExecutionError(
+        f"transport.execute_atomic{signature} does not accept click_backend, so "
+        "the engine's click backend would be silently ignored"
+    )

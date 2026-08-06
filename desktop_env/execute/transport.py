@@ -65,7 +65,10 @@ class GuiTransport(Protocol):
     def coalesced_type(self, text: str) -> None: ...
     def wait(self, seconds: float) -> None: ...
     def execute_atomic(
-        self, operations: tuple[Operation, ...]
+        self,
+        operations: tuple[Operation, ...],
+        *,
+        click_backend: str = PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
     ) -> AtomicExecutionResult: ...
 
 

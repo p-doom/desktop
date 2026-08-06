@@ -1,11 +1,14 @@
-"""ITEM 7: ``Engine._accepts_click_backend`` and the receipt it builds.
+"""ITEM 7: the engine's transport contract, and the receipt it builds.
 
-The capability is decided by INSPECTING the signature once, at construction.  The
-alternative -- calling and catching ``TypeError`` -- also swallows a genuine
-``TypeError`` raised from *inside* a transport, and then retries with different
-arguments.  A real bug would be read as "capability absent".  The critical test
-here is therefore the last group: a transport that raises ``TypeError`` from its
-body must have that ``TypeError`` propagate.
+The engine takes ONE transport shape: ``execute_atomic`` must be able to receive
+``click_backend``, because the engine is what chooses it.  That is checked by
+INSPECTING the signature at construction, and a transport that fails the check is
+refused there rather than being called without the keyword -- which would drop an
+explicit ``click_backend=`` on the floor.  The alternative to inspection --
+calling and catching ``TypeError`` -- also swallows a genuine ``TypeError`` raised
+from *inside* a transport, so a real bug would read as "capability absent".  The
+critical test here is therefore the last group: a transport that raises
+``TypeError`` from its body must have that ``TypeError`` propagate.
 """
 
 from __future__ import annotations
@@ -98,11 +101,6 @@ class RaisingTypeErrorTransport(_BaseTransport):
         raise TypeError("unsupported operand type(s) for +: 'int' and 'str'")
 
 
-class RaisingTypeErrorPinnedTransport(_BaseTransport):
-    def execute_atomic(self, operations):
-        raise TypeError("a real bug deep inside the transport")
-
-
 class OpaqueTransport(_BaseTransport):
     """``execute_atomic`` whose signature cannot be inspected."""
 
@@ -110,51 +108,50 @@ class OpaqueTransport(_BaseTransport):
 
 
 # --------------------------------------------------------------------------- #
-# Capability detection
+# The transport contract, enforced at construction
 # --------------------------------------------------------------------------- #
 
 
-def test_recording_transport_accepts_a_click_backend():
-    engine = Engine(RecordingTransport())
-    assert engine._click_backend_supported is True
+def test_recording_transport_satisfies_the_contract():
+    assert Engine(RecordingTransport()).transport is not None
 
 
-def test_a_transport_pinning_one_backend_does_not_accept_the_keyword():
-    engine = Engine(PinnedBackendTransport())
-    assert engine._click_backend_supported is False
-
-
-def test_a_var_keyword_transport_is_treated_as_accepting_it():
-    assert Engine(KwargsTransport())._click_backend_supported is True
+def test_a_var_keyword_transport_can_receive_the_backend():
+    assert Engine(KwargsTransport()).transport is not None
 
 
 def test_a_positional_or_keyword_parameter_also_counts():
-    assert Engine(PositionalOnlyTransport())._click_backend_supported is True
+    assert Engine(PositionalOnlyTransport()).transport is not None
 
 
-def test_an_uninspectable_transport_is_assumed_not_to_accept_it():
-    assert Engine(OpaqueTransport())._click_backend_supported is False
+def test_a_transport_that_pins_one_backend_is_refused_at_construction():
+    """The engine chooses the backend; a transport that cannot receive it would
+    turn an explicit ``click_backend=`` into a silent no-op."""
+    with pytest.raises(ExecutionError, match="does not accept click_backend"):
+        Engine(PinnedBackendTransport())
 
 
-def test_the_capability_is_decided_once_at_construction_and_cached():
-    transport = PinnedBackendTransport()
-    engine = Engine(transport)
-    assert engine._click_backend_supported is False
-    # Swapping in a switchable implementation afterwards must NOT change the
-    # cached answer: caching is the documented behaviour, and a per-call probe
-    # would be a per-call inspect.signature on the hot path.
-    transport.execute_atomic = SwitchableBackendTransport().execute_atomic
-    assert engine._click_backend_supported is False
+def test_an_uninspectable_transport_is_refused_at_construction():
+    with pytest.raises(ExecutionError, match="no inspectable signature"):
+        Engine(OpaqueTransport())
 
 
-def test_detection_does_not_call_the_transport():
+def test_an_unknown_click_backend_is_refused_at_construction():
+    """Not at the first ``apply``: ``RecordingTransport`` never validated it at
+    all, so an engine could produce receipts naming a backend that does not
+    exist."""
+    with pytest.raises(ExecutionError, match="unsupported click backend"):
+        Engine(RecordingTransport(), click_backend="no-such-backend")
+
+
+def test_the_contract_check_does_not_call_the_transport():
     transport = SwitchableBackendTransport()
     Engine(transport)
     assert transport.seen == []
 
 
 # --------------------------------------------------------------------------- #
-# Dispatch follows the detected capability
+# Dispatch
 # --------------------------------------------------------------------------- #
 
 
@@ -171,29 +168,15 @@ def test_the_default_backend_is_the_release_motion_one():
     assert transport.seen[0]["click_backend"] == PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND
 
 
-def test_a_pinned_transport_is_called_without_the_keyword():
-    transport = PinnedBackendTransport()
-    engine = Engine(transport, click_backend=DIRECT_XTEST_CLICK_BACKEND)
-    receipt = engine.apply((ir.move_to(1, 2),))
-    assert receipt.ok is True
-    assert transport.seen == [{"operations": (ir.move_to(1, 2),)}]
-
-
 # --------------------------------------------------------------------------- #
 # THE CRITICAL CASE
 # --------------------------------------------------------------------------- #
 
 
-def test_a_genuine_typeerror_from_inside_a_switchable_transport_propagates():
+def test_a_genuine_typeerror_from_inside_a_transport_propagates():
     """It must NOT be read as "capability absent" and retried."""
     engine = Engine(RaisingTypeErrorTransport())
     with pytest.raises(TypeError, match="unsupported operand"):
-        engine.apply((ir.move_to(1, 2),))
-
-
-def test_a_genuine_typeerror_from_inside_a_pinned_transport_propagates():
-    engine = Engine(RaisingTypeErrorPinnedTransport())
-    with pytest.raises(TypeError, match="a real bug deep inside"):
         engine.apply((ir.move_to(1, 2),))
 
 
@@ -206,9 +189,11 @@ def test_a_propagated_typeerror_leaves_no_receipt_behind():
 
 def test_the_engine_never_wraps_execute_atomic_in_except_typeerror():
     """Structural guard on the mechanism, not just the behaviour."""
+    from desktop_env.execute.engine import _require_click_backend_parameter
+
     source = inspect.getsource(Engine._execute)
     assert "except" not in source
-    assert "TypeError" in inspect.getsource(Engine._accepts_click_backend)
+    assert "TypeError" in inspect.getsource(_require_click_backend_parameter)
 
 
 # --------------------------------------------------------------------------- #
