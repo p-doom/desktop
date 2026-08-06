@@ -9,3 +9,6 @@ dist/
 # Built images and VM artifacts are inputs or outputs, never sources.
 *.sif
 *.qcow2
+.coverage
+.coverage.*
+htmlcov/
