@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from env_fleet.readiness import readiness_summary
+from env_fleet.readiness import int_metadata, readiness_summary
 from env_fleet.registry import upsert_registry
 from env_fleet.spec import FleetRunLayout, make_server_specs
 
@@ -192,3 +192,9 @@ def test_readiness_summary_ignores_stale_status_files(tmp_path):
     assert summary["active_status_files"] == 1
     assert summary["stale_status_files"] == 1
     assert summary["server_summaries"][0]["stale_status_files"] == 1
+
+
+def test_int_metadata_rejects_a_malformed_registry_value():
+    assert int_metadata({}, "expected_ready_sessions", default=7) == 7
+    with pytest.raises(ValueError, match="expected_ready_sessions"):
+        int_metadata({"expected_ready_sessions": "lots"}, "expected_ready_sessions", default=7)

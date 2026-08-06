@@ -22,6 +22,7 @@ from env_fleet.supervise import (
     build_sbatch_command,
     default_asset_cache_dir,
     default_task_base_path,
+    env_value,
     expected_ready_sessions,
     format_status_report,
     format_submit_report,
@@ -1006,3 +1007,9 @@ def test_path_helpers_reject_non_absolute_runtime_overrides(name, helper):
 
     with pytest.raises(ValueError, match=f"{name} must be an absolute path"):
         helper({name: f"${{{name}}}/path"})
+
+
+def test_env_value_rejects_a_malformed_environment_override():
+    assert env_value({}, "OSWORLD_ENV_SERVERS_PER_NODE", int, 1) == 1
+    with pytest.raises(ValueError, match="OSWORLD_ENV_SERVERS_PER_NODE"):
+        env_value({"OSWORLD_ENV_SERVERS_PER_NODE": "8x"}, "OSWORLD_ENV_SERVERS_PER_NODE", int, 1)
