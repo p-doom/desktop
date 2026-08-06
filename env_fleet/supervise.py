@@ -1480,6 +1480,23 @@ def add_layout_args(parser: argparse.ArgumentParser, defaults: FleetRunLayout) -
     parser.add_argument("--registry", type=Path)
 
 
+def resolve_trainer_section(
+    trainer_section_factory: TrainerSectionFactory | None,
+    layout: FleetRunLayout,
+) -> str | None:
+    """Render the consumer-specific section, or None with no consumer registered.
+
+    The core CLI runs with no ``trainer_section_factory`` (there is no built-in
+    consumer); an adapter such as ``env_fleet.adapters.prime_rl`` supplies one.
+    Both are real, so the ``None`` case is not dead -- this just gives the one
+    place that decides which case applies, instead of testing it separately at
+    every call site.
+    """
+    if trainer_section_factory is None:
+        return None
+    return trainer_section_factory(layout)
+
+
 def submit(
     args: argparse.Namespace,
     *,
@@ -1490,13 +1507,16 @@ def submit(
         if args.prefetch_assets:
             print(format_shell_command(build_prefetch_command(args)))
         print(format_shell_command(command))
-        if trainer_section_factory is not None:
+        trainer_section = resolve_trainer_section(
+            trainer_section_factory, dry_run_layout(args)
+        )
+        if trainer_section is not None:
             print()
             print(
                 "Consumer command preview "
                 "(replace <run-id> with the submitted fleet job id if unset):"
             )
-            print(trainer_section_factory(dry_run_layout(args)))
+            print(trainer_section)
         return 0
 
     if args.prefetch_assets:
@@ -1513,9 +1533,7 @@ def submit(
     layout = FleetRunLayout.for_run(
         run_id=args.run_id or job_id, run_base=args.run_base
     )
-    trainer_section = (
-        trainer_section_factory(layout) if trainer_section_factory is not None else None
-    )
+    trainer_section = resolve_trainer_section(trainer_section_factory, layout)
     print(format_submit_report(job_id, layout, args, trainer_section=trainer_section))
     return 0
 
