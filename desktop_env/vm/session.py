@@ -568,13 +568,11 @@ class DesktopSession:
         This is the second tier of the fast-reset idea: on the first call for a
         tag, run the (expensive) per-task setup once and snapshot the result; on
         every later call, restore that snapshot and skip both the reboot and the
-        setup.  Falls back to a plain clean reset plus ``setup`` whenever the
-        runtime does not support checkpoints.
+        setup.
         """
         if not self._started:
             raise SessionError("session is not started")
-        has = getattr(self.runtime, "has_checkpoint", None)
-        if callable(has) and has(name):
+        if self.runtime.has_checkpoint(name):
             self.runtime.restore(name)
             base_url = self.transport.base_url if self.transport else ""
             self.transport = HttpGuiTransport(

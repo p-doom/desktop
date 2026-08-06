@@ -117,6 +117,17 @@ class Runtime(Protocol):
         """Restore full state from ``name`` and wait for the guest to answer."""
         ...
 
+    def has_checkpoint(self, name: str) -> bool:
+        """Whether ``name`` can be restored without being captured first.
+
+        A protocol member rather than something a caller probes with ``getattr``:
+        ``DesktopSession.reset_to_checkpoint`` asks this to decide between
+        restoring a warm post-setup snapshot and re-running the setup, and a
+        runtime that quietly lacked the method took the slow branch forever
+        while looking like it was working.
+        """
+        ...
+
     def list_checkpoints(self) -> tuple[Checkpoint, ...]:
         ...
 
@@ -138,3 +149,4 @@ class SupportsCheckpoints(Protocol):
 
     def checkpoint(self, name: str) -> Checkpoint: ...
     def restore(self, name: str) -> Checkpoint: ...
+    def has_checkpoint(self, name: str) -> bool: ...
