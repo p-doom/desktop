@@ -1,13 +1,10 @@
 """Tests for the cross-node rollout broker.
 
-Two groups:
-
-* the env-fleet-specific surface — the supervisor's broker entrypoint, resolving
-  cross-node backends out of registry gateway metadata, and the capacity ranking;
-* the gateway routing surface: request routing, frontend request-id
-  preservation, health probing, backend quarantine on timeout, pending-request
-  queueing/expiry, and the capacity-reservation invariants that stop the broker
-  oversending a stale ready slot.
+Covers the supervisor's broker entrypoint, resolving cross-node backends out of
+registry gateway metadata, capacity ranking, request routing, frontend
+request-id preservation, health probing, backend quarantine on timeout,
+pending-request queueing/expiry, and the capacity-reservation invariants that
+stop the broker oversending a stale ready slot.
 """
 
 from __future__ import annotations
@@ -121,8 +118,7 @@ def run(coro):
 # A gateway backend's status_dir is required (see broker.py: a backend with no
 # status dir would report capacity_ready unconditionally). Tests that don't care
 # about a given backend's capacity point it at a directory that never exists;
-# read_statuses() treats a missing directory as "no status files", same as the
-# old None-placeholder used to.
+# read_statuses() treats a missing directory as "no status files".
 UNUSED_STATUS_DIR = "/nonexistent/env-fleet-test-status-dir"
 
 

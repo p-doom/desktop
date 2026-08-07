@@ -1,10 +1,10 @@
 """env-fleet: Slurm-native, capacity-aware fleet management for verifiers env-servers.
 
 The scarce resource is an externally-leased machine (a QEMU desktop VM behind an
-apptainer container behind a Slurm allocation), not a GPU and not a token budget.
-env-fleet manages **machines**: it leases them, registers them, counts how many
-are actually warm, routes work only to replicas that have a free one, and
-restarts whatever loses theirs. It never sees an action, a grammar, or a reward.
+apptainer container behind a Slurm allocation). env-fleet leases them, registers
+them, counts how many are actually warm, routes work only to replicas that have
+a free one, and restarts whatever loses theirs. It never sees an action, a
+grammar, or a reward.
 
 No consumer-specific coupling belongs anywhere but ``env_fleet.adapters``.
 """

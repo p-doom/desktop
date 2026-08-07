@@ -1,7 +1,7 @@
-"""The ONLY place in env-fleet that knows the word ``prime_rl``.
+"""The only place in env-fleet that knows the word ``prime_rl``.
 
 env-fleet manages machines; prime-rl is one possible consumer of those machines.
-Everything prime-rl-shaped is quarantined here:
+Everything prime-rl-shaped lives here:
 
 * the two consumer paths (``prime_rl_config_path``, ``prime_rl_output_dir``) and
   their ``OSWORLD_PRIME_RL_*`` env names, injected into
@@ -12,8 +12,6 @@ Everything prime-rl-shaped is quarantined here:
   stays in :mod:`env_fleet.spec`);
 * the operator's copy-pastable launch block, handed to
   :func:`env_fleet.supervise.format_submit_report` as a callable.
-
-Delete this file and env-fleet still works. That is the point.
 """
 
 from __future__ import annotations

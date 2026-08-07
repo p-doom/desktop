@@ -1,18 +1,15 @@
 """Cross-node ZMQ broker that routes on leased-machine capacity.
 
-It complements the ``verifiers`` broker rather than duplicating it:
+``tcp://`` end to end: one ROUTER frontend bound on a routable address, one
+DEALER per env-server replica on other nodes of the Slurm allocation, so it
+load-balances across a multi-node fleet. ``ipc://``, which the ``verifiers``
+broker uses per worker, cannot express that.
 
-* ``verifiers``' own broker binds ``ipc://`` sockets per worker behind a single
-  ``tcp://127.0.0.1:5000`` frontend. It is single-node by construction.
-* This broker is ``tcp://`` end to end: one ROUTER frontend bound on a routable
-  address, one DEALER per env-server replica **on other nodes** of the Slurm
-  allocation. It therefore load-balances across a multi-node fleet, which
-  ``ipc://`` cannot express.
-* Its routing key is not round-robin or in-flight count alone. It reads
-  desktop-pool capacity off the worker **status files on disk** --
-  :func:`available_ready_sessions` and :func:`backend_capacity_rank` -- so a
-  replica whose VM pool has no free machine is skipped, and requests queue
-  instead of failing. That capacity signal does not exist in ``verifiers``.
+The routing key is not round-robin or in-flight count alone. It reads
+desktop-pool capacity off the worker status files on disk --
+:func:`available_ready_sessions` and :func:`backend_capacity_rank` -- so a
+replica whose VM pool has no free machine is skipped, and requests queue
+instead of failing.
 
 Everything routed through here is an opaque payload. The broker never inspects,
 parses, or rewrites a rollout.
@@ -238,7 +235,6 @@ class ZMQRolloutGateway:
             self.close()
 
     def close(self) -> None:
-        """Close all gateway sockets."""
         if self.frontend is not None:
             self.frontend.close()
             self.frontend = None
@@ -284,7 +280,6 @@ class ZMQRolloutGateway:
         return backend.healthy and now >= backend.quarantined_until
 
     async def handle_frontend_message(self, frames: list[bytes]) -> None:
-        """Handle a frontend ROUTER message from the rollout consumer."""
         if len(frames) != 4:
             self.logger.warning(
                 "Invalid frontend message: expected 4 frames, got %d", len(frames)
@@ -344,7 +339,6 @@ class ZMQRolloutGateway:
         self,
         request: PendingFrontendRequest,
     ) -> DispatchStatus:
-        """Try to route a frontend request to any currently available backend."""
         attempted: set[int] = set()
         while True:
             backend = self.select_backend()
@@ -395,7 +389,6 @@ class ZMQRolloutGateway:
             return
 
     async def fail_all_pending_requests(self, error: str) -> None:
-        """Fail and clear every queued frontend request."""
         pending = list(self.pending_frontend_requests.values())
         self.pending_frontend_requests.clear()
         for request in pending:
@@ -646,7 +639,6 @@ class ZMQRolloutGateway:
         )
 
     def refresh_all_backend_capacity(self, *, force: bool = False) -> None:
-        """Refresh capacity for every backend."""
         now = time.monotonic()
         for backend in self.backends:
             self.refresh_backend_capacity(backend, now=now, force=force)
@@ -705,7 +697,7 @@ def health_response_bytes(success: bool) -> bytes:
 
 
 def available_ready_sessions(backend: GatewayBackend) -> int:
-    """VM-pool capacity read from status files -- the routing key of this broker."""
+    """VM-pool capacity read from status files, minus outstanding reservations."""
     return max(0, backend.ready_sessions - backend.reserved_ready_sessions)
 
 
@@ -804,13 +796,12 @@ def wait_for_registry_gateway(args: argparse.Namespace) -> dict[str, Any]:
         bind_address = args.bind_address or gateway_bind_address(metadata)
         if bind_address and backend_addresses and len(registry.servers) >= expected:
             # A backend with no status dir reports capacity_ready unconditionally,
-            # so the broker would route to it without ever reading its pool -- the
-            # one thing this broker exists to do. Every node has registered by
-            # here, so an unmatched address means the gateway's backend_addresses
-            # (built from slurm_node_addrs on rank 0) and server.public_address
-            # (built from scontrol NodeAddr on each node) disagree about a host
-            # string, and the exact-match join in gateway_backend_status_dirs
-            # silently missed.
+            # so the broker would route to it without ever reading its pool. Every
+            # node has registered by here, so an unmatched address means the
+            # gateway's backend_addresses (built from slurm_node_addrs on rank 0)
+            # and server.public_address (built from scontrol NodeAddr on each node)
+            # disagree about a host string, and the exact-match join in
+            # gateway_backend_status_dirs silently missed.
             unmatched = [
                 address
                 for address, status_dir in zip(

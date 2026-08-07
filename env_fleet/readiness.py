@@ -326,7 +326,6 @@ def int_metadata(metadata: Mapping[str, Any], key: str, *, default: int) -> int:
 
 
 def sum_int_field(statuses: Sequence[Mapping[str, Any]], field: str) -> int:
-    """Sum one integer counter across status payloads."""
     total = 0
     for status in statuses:
         try:
@@ -345,7 +344,6 @@ def count_positive_float_field(
     statuses: Sequence[Mapping[str, Any]],
     field: str,
 ) -> int:
-    """Count status payloads with a positive numeric field value."""
     total = 0
     for status in statuses:
         try:
@@ -357,7 +355,6 @@ def count_positive_float_field(
 
 
 def max_float_field(statuses: Sequence[Mapping[str, Any]], field: str) -> float:
-    """Return the maximum numeric field value across status payloads."""
     max_value = 0.0
     for status in statuses:
         try:

@@ -1,8 +1,5 @@
 """Fleet lifecycle: prepare configs, supervise replicas, submit/inspect/cancel.
 
-Three former scripts, one module, because they share one vocabulary (a run
-layout, a registry, a declarative env-option table):
-
 * ``prepare``  -- render one verifiers env-server config per replica on this
   node and upsert them into the shared registry.
 * ``run``      -- supervise those replicas plus the broker inside the
@@ -240,7 +237,6 @@ def script_path(name: str) -> str:
 
 
 def broker_command(python: str) -> list[str]:
-    """Return the in-package broker entrypoint the supervisor spawns."""
     return [python, "-m", BROKER_MODULE]
 
 
@@ -469,7 +465,6 @@ def resolve_artifact_output_dir(args: argparse.Namespace) -> Path:
 
 
 def gateway_config(args: argparse.Namespace, replica_count: int) -> dict[str, Any]:
-    """Build the logical rollout gateway endpoint and backend list."""
     gateway_port = args.gateway_port or args.base_port + replica_count
     replica_hosts = resolve_replica_hosts(args)
     gateway_host = args.gateway_host or (
@@ -1486,11 +1481,8 @@ def resolve_trainer_section(
 ) -> str | None:
     """Render the consumer-specific section, or None with no consumer registered.
 
-    The core CLI runs with no ``trainer_section_factory`` (there is no built-in
-    consumer); an adapter such as ``env_fleet.adapters.prime_rl`` supplies one.
-    Both are real, so the ``None`` case is not dead -- this just gives the one
-    place that decides which case applies, instead of testing it separately at
-    every call site.
+    The core CLI runs with no ``trainer_section_factory``; an adapter supplies
+    one.
     """
     if trainer_section_factory is None:
         return None
