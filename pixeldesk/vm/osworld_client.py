@@ -8,15 +8,12 @@ The in-VM agent exposes a small Flask app.  Of it, exactly four endpoints matter
                              subprocess and does NOT eval strings
     GET  /accessibility   -> the platform accessibility tree (AT-SPI XML)
 
-The predecessor client was 592 LOC because it grew three grammar-specific
-``dispatch_*`` methods (one per action format the project was A/B-ing) plus its
-own two key-name tables.  All of that is gone from here: dispatch belongs to a
-codec and an executor, and the key tables are consolidated in
-``pixeldesk.execute.keymap``.  What is left is a transport.
+There is no dispatch here and no key tables: dispatch belongs to a codec and an
+executor, and the key tables live in ``pixeldesk.execute.keymap``.  This is a
+transport.
 
-Screenshots are handed back as **PNG bytes**, never as decoded images.  Pillow is
-the caller's problem, and the caller is the only party who knows whether it wants
-a tensor, a thumbnail, or a byte-for-byte hash.
+Screenshots are handed back as PNG bytes, never as decoded images -- only the
+caller knows whether it wants a tensor, a thumbnail, or a byte-for-byte hash.
 
 HTTP is ``urllib.request``: no ``requests``, no session object, no dependency.
 """
@@ -175,18 +172,16 @@ class OSWorldClient:
     def cursor_position(self) -> tuple[int, int]:
         """Where the guest thinks the pointer is, as a two-element JSON array.
 
-        A FIFTH endpoint beyond the four above, kept deliberately: the shared
-        codec contract is ``compile(text, geometry, cursor)``, so *something* has
-        to supply the cursor as data, and the alternative -- round-tripping
+        A fifth endpoint beyond the four above, kept deliberately: the codec
+        contract is ``compile(text, geometry, cursor)``, so something has to
+        supply the cursor as data, and the alternative -- round-tripping
         ``pyautogui.position()`` through ``/execute`` -- costs an interpreter
-        start per read and would make every step slower for no gain.
+        start per read.
 
-        One accepted shape, which is the shape the guest sends: this used to also
-        accept ``{"x": .., "y": ..}`` while ``HttpGuiTransport.cursor_position``
-        -- the *same* endpoint, on the same base URL, held by the same session --
-        accepted only the array.  Two readers of one endpoint disagreeing about
-        its wire format is how a guest change gets diagnosed as an intermittent
-        executor bug.
+        Exactly one accepted shape, the one the guest sends, and the same shape
+        ``HttpGuiTransport.cursor_position`` accepts.  Two readers of one endpoint
+        disagreeing about its wire format is how a guest change gets diagnosed as
+        an intermittent executor bug.
         """
         payload = self._request_json("GET", "/cursor_position")
         if not isinstance(payload, list) or len(payload) != 2:

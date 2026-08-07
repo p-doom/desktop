@@ -1,20 +1,18 @@
 """Constructor-side entry points: plain functions, explicit config.
 
-This closes the gap that opened when the provider monkeypatch was refused.
-Previously a harness obtained a desktop by *naming* one -- ``provider_name=
-"docker"`` resolving, via a factory that had been rewritten at import time, to a
-local-QEMU provider.  That indirection is what produced the outage recorded in
-``qemu.py``'s header: a re-clone of the third-party tree removed the patch, the
-name then resolved to something else, and every dependent job failed in a way
-that looked like a model regression.
+A harness used to obtain a desktop by *naming* one -- ``provider_name="docker"``
+resolving, through a third-party factory rewritten at import time, to a
+local-QEMU provider.  A re-clone of that tree removed the rewrite, the name then
+resolved to something else, and every dependent job failed in a way that looked
+like a model regression.
 
 So there is deliberately:
 
-* **no name registry** -- nothing maps a string like ``"qemu"`` or ``"docker"`` to
-  an implementation.  You pass an image path and get a runtime.
-* **no plugin lookup** -- no entry points, no ``importlib`` by path, no scanning.
-* **no import-time side effects** -- importing this module changes nothing
-  anywhere.  Every function here only ever constructs and returns objects.
+* no name registry -- nothing maps a string like ``"qemu"`` or ``"docker"`` to an
+  implementation.  You pass an image path and get a runtime.
+* no plugin lookup -- no entry points, no ``importlib`` by path, no scanning.
+* no import-time side effects -- importing this module changes nothing anywhere.
+  Every function here only ever constructs and returns objects.
 
 Configuration is explicit arguments first.  Environment variables are a *named
 fallback* for the values a scheduler legitimately owns, and each one is listed in
@@ -58,10 +56,9 @@ ENVIRONMENT: dict[str, str] = {
 
 
 #: QEMU's ``-m`` size grammar, as far as this factory uses it: a count with an
-#: optional binary suffix.  Checked HERE rather than left to QEMU, because every
-#: other value in this table is validated before anything boots and this one was
-#: not: a typo reached ``-m`` and surfaced as a VM that died during startup, i.e.
-#: after a subprocess spawn, wearing a boot failure's error message.
+#: optional binary suffix.  Checked HERE rather than left to QEMU, so a typo is
+#: a config error instead of a VM that dies during startup wearing a boot
+#: failure's error message.
 _MEMORY_SIZE = re.compile(r"[0-9]+[KMGT]?", re.IGNORECASE)
 
 
@@ -196,36 +193,26 @@ def qemu_session_factory(
 ) -> Callable[[PortLease], DesktopSession]:
     """A ``session_factory`` for ``DesktopSessionPool``, bound to one image.
 
-    Two couplings here are load-bearing and easy to get wrong separately:
+    Three couplings here are load-bearing and easy to get wrong separately:
 
-    1. **The lease's ports are pinned into the runtime.**  The pool holds an
+    1. The lease's ports are pinned into the runtime.  The pool holds an
        ``flock`` on a port block for the lease's lifetime; if the runtime then
        allocated its own with ``bind(0)``, the lock would guard four ports nothing
        listens on while QEMU bound four unrelated ones, and two pooled sessions
        could still collide.  Passing ``lease.ports`` through is what makes the
        lease mean something.
-    2. **``require_single_task`` defaults to False here** -- but NOT for the reason
-       this docstring used to give, and the difference matters to anyone reasoning
-       about pool isolation.
-
-       What the flag actually controls is one thing only: whether a
-       ``SLURM_NTASKS`` other than ``"1"`` is rejected.  It does **not** gate the
-       session's one-VM-per-task ``flock``, which ``_prepare_isolation`` takes
-       unconditionally.  So ``True`` would NOT make the second pooled session fail
-       to start -- verified -- and ``False`` does not disable the lock.
-
-       What actually lets several pooled desktops coexist in one process is
-       coupling 3 below: each lease has its own ``workdir``, the task lock lives
-       *inside* the session's scratch root, so two pooled sessions never contend
-       for it at either setting of the flag.  Hand a pool an explicit shared
-       ``scratch_root`` and the second session fails regardless.
-
-       ``False`` is still the right default here, because a pool process
-       legitimately runs under ``SLURM_NTASKS > 1``.
-
-    3. **The lease's ``workdir`` becomes the session's scratch root**, so a retired
-       session's scratch is released with its lease -- and, per coupling 2, this is
-       the mechanism that keeps pooled sessions from colliding on the task lock.
+    2. ``require_single_task`` defaults to False here.  The flag controls one
+       thing only: whether a ``SLURM_NTASKS`` other than ``"1"`` is rejected.  It
+       does NOT gate the session's one-VM-per-task ``flock``, which
+       ``_prepare_isolation`` takes unconditionally.  ``False`` is the right
+       default because a pool process legitimately runs under
+       ``SLURM_NTASKS > 1``.
+    3. The lease's ``workdir`` becomes the session's scratch root, so a retired
+       session's scratch is released with its lease.  This -- not the flag above --
+       is also what lets several pooled desktops coexist in one process: the task
+       lock lives *inside* the session's scratch root, so two pooled sessions
+       never contend for it.  Hand a pool an explicit shared ``scratch_root`` and
+       the second session fails regardless of either setting.
     """
 
     def factory(lease: PortLease) -> DesktopSession:

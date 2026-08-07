@@ -1,18 +1,14 @@
-"""pixeldesk: apply resolved input to a real desktop, and reset it.
+"""pixeldesk: boot desktop VMs, and apply resolved input to them.
 
-THE INVARIANT.  Nothing in this package imports a grammar or a codec, and nothing
-here knows what an action grammar is.  It receives ``Operation``s already resolved
-to absolute screen pixels and applies them.  A team training an absolute-coordinate
-model and a team training a relative-delta model both use it unchanged, because the
-difference between them is fully consumed inside their own ``Codec.compile`` before
-an ``Operation`` exists.
+Receives ``Operation``s already resolved to absolute screen pixels and applies
+them to a real desktop.  Nothing in this package imports a grammar or a codec:
+whichever coordinate convention a model emits is consumed inside that team's own
+``Codec.compile`` before an ``Operation`` exists, so an absolute-coordinate model
+and a relative-delta model both use this package unchanged.
 
-ONE runtime dependency: Pillow, used in exactly one place
-(``pixeldesk.vm.readiness``) to downsample and measure a screenshot.  A
-hand-written PNG decoder was written and then deleted, because a decoder bug is
-silent -- it makes readiness say "not ready", which is indistinguishable from a
-slow VM.  HTTP is ``urllib.request``, and screenshots cross every other boundary
-here as raw ``bytes``.  Two external binaries are assumed:
+One runtime dependency, Pillow, used in ``pixeldesk.vm.readiness`` to downsample
+and measure a screenshot.  HTTP is ``urllib.request``, and screenshots cross
+every other boundary here as raw ``bytes``.  Two external binaries are assumed:
 ``qemu-system-x86_64`` and ``apptainer``.
 """
 

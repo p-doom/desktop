@@ -5,19 +5,13 @@ with a *desktop*.  During boot the framebuffer is uniformly black or uniformly
 grey for tens of seconds, and a harness that starts driving then produces a
 rollout whose first N frames carry no information -- the "black-frame carry"
 failure, which silently invalidates a training corpus.  Two statistics catch it:
-the fraction of non-dark pixels, and the luma
-standard deviation.  Dark-and-flat means not ready; either one alone is not
-enough, because a solid grey screen is bright but flat and a mostly-black desktop
-with a bright taskbar is dark but structured.
+the fraction of non-dark pixels, and the luma standard deviation.  Dark-and-flat
+means not ready; either one alone is not enough, because a solid grey screen is
+bright but flat and a mostly-black desktop with a bright taskbar is dark but
+structured.
 
-Pillow is this package's only runtime dependency, and it is here for a reason
-specific to this heuristic: a bug in a hand-rolled PNG decoder does not announce
-itself.  It makes the statistics wrong, wrong statistics make readiness say *not
-ready*, and "not ready" is indistinguishable from a slow VM -- a silent failure
-mode that mimics infrastructure slowness and would be diagnosed as infrastructure
-for as long as it took someone to doubt the decoder.  Pillow's correctness
-criterion is external to us and its import floor is small.  ``pixeldesk`` imports
-it here and nowhere else; screenshots cross every other boundary as raw ``bytes``.
+This is the one place ``pixeldesk`` imports Pillow; screenshots cross every other
+boundary as raw ``bytes``.
 
 The sampler must AVERAGE, not point-sample: ``thumbnail`` averages over a
 resampling filter, and the two ratio/stddev thresholds below are calibrated

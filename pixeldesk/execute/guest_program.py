@@ -1,34 +1,31 @@
 """Compile a tuple of ``Operation``s into exactly ONE ordered guest process.
 
-What one process per action buys:
+One process per action, not one per event: a press, a move, and a release in one
+action cannot be interleaved with anything else, cannot pay three interpreter
+startups, and cannot half-apply if the middle event fails.
 
-  * **One process per action.**  Not one per event.  A press, a move, and a
-    release in one action cannot be interleaved with anything else, cannot pay
-    three interpreter startups, and cannot half-apply if the middle event fails.
-  * **Held state is verified, not assumed.**  The program reads the X11 pointer
-    mask before and after and refuses to report success if the observed mask
-    disagrees with the mask its own operation list implies.
-  * **Failure always cleans up.**  Any exception releases every key the program
-    touched and every pointer button, so a crashed action cannot leave the guest
-    with ``ctrl`` stuck down for the rest of the episode.
-  * **Unicode typing actually works.**  ``pyautogui.write`` drops every
-    character outside printable ASCII on the pinned image, so ``coalesced_type``
-    falls back to a GTK clipboard paste for those payloads -- and only those,
-    because that paste is itself a silent no-op in a terminal.  One predicate,
-    ``coalesced_type_mechanism``, decides; ``compile_unicode_coalesced_type``'s
-    docstring has the reason.
-  * **The click primitive is switchable.**  ``CLICK_BACKENDS`` exists because the
-    release-side ``MotionNotify`` that PyAutoGUI emits is an *observable*
-    difference to some toolkits; the two backends emit an identical press-side
-    stream and differ only in that event.
+The program reads the X11 pointer mask before and after, and refuses to report
+success if the observed mask disagrees with the mask its own operation list
+implies.  Any exception releases every key and every pointer button the program
+touched, so a crashed action cannot leave the guest with ``ctrl`` stuck down for
+the rest of the episode.
+
+``pyautogui.write`` drops every character outside printable ASCII on the pinned
+image, so ``coalesced_type`` falls back to a GTK clipboard paste for those
+payloads -- and only those, because that paste is itself a silent no-op in a
+terminal.  ``coalesced_type_mechanism`` is the one predicate that decides;
+``compile_unicode_coalesced_type``'s docstring has the reason.
+
+``CLICK_BACKENDS`` is switchable because the release-side ``MotionNotify`` that
+PyAutoGUI emits is an *observable* difference to some toolkits; the two backends
+emit an identical press-side stream and differ only in that event.
 
 THERE IS NO RELATIVE MOVE KIND.  Resolving a delta against
 ``pyautogui.position()`` inside the guest would put a coordinate convention in
-the executor, which this package forbids; relative grammars resolve host-side in
-``Codec.compile(text, geometry, cursor)`` and emit ``move_to``.  The resolution
-stays checkable because the receipt reports ``cursor_before``, so a host cursor
-read that disagreed with the guest's is visible after the fact rather than
-silently absorbed.
+the executor; relative grammars resolve host-side in
+``Codec.compile(text, geometry, cursor)`` and emit ``move_to``.  The receipt
+reports ``cursor_before``, so a host cursor read that disagreed with the guest's
+is visible after the fact rather than silently absorbed.
 
 ``drag`` is lowered to press / move / release inside the single process, so a
 zero-extent drag survives resolution.
@@ -71,8 +68,8 @@ ALL_POINTER_BUTTON_MASK = sum(BUTTON_MASKS.values())
 # contents.
 CLIPBOARD_PASTE_DELAY_MS = 150
 CLIPBOARD_OWNER_LIFETIME_MS = 750
-# The two realisations of ``coalesced_type``.  See
-# ``coalesced_type_mechanism`` -- the ONE place that chooses between them.
+# The two realisations of ``coalesced_type``.  ``coalesced_type_mechanism`` is
+# the one place that chooses between them.
 PYAUTOGUI_WRITE_TYPING_MECHANISM = "pyautogui_write"
 GTK_CLIPBOARD_TYPING_MECHANISM = "gtk_clipboard_ctrl_v"
 ATOMIC_RESULT_PREFIX = "DESKTOP_ENV_ATOMIC_RESULT="
@@ -151,10 +148,9 @@ class AtomicExecutionResult:
 def coalesced_type_mechanism(text: str) -> str:
     """Which substrate mechanism realises this text as guest input.
 
-    THE one decision point.  ``coalesced_type`` is an intent -- *this text
-    becomes input* -- and the Operation vocabulary deliberately says nothing
-    about how.  Everything that needs to know the answer (the compiler below,
-    the receipt's ``backend_primitives``) asks here rather than re-deciding.
+    The one decision point: ``coalesced_type`` is an intent, and everything that
+    needs to know how it is realised (the compiler below, the receipt's
+    ``backend_primitives``) asks here rather than re-deciding.
 
     The predicate is "can ``pyautogui.write`` express this text": printable
     ASCII, ``U+0020``-``U+007E``.  Those characters are exactly the ones in the
@@ -178,7 +174,7 @@ def compile_unicode_coalesced_type(text: str) -> str:
     below for everything else.  Callers do not choose and cannot; the Operation
     vocabulary has one typing intent and this is where it is realised.
 
-    WHY THE SPLIT EXISTS, because the code cannot show it.  The clipboard route
+    Why the split exists, which the code cannot show.  The clipboard route
     pastes with ``Ctrl-A`` + ``Ctrl-V``, and **in gnome-terminal ``Ctrl-V`` is
     readline's quoted-insert, not paste** (the terminal's paste chord is
     ``Ctrl-Shift-V``).  So in a terminal the whole program runs, owns the
@@ -242,15 +238,15 @@ def expected_atomic_input_state(
 
     BOTH halves of a transition are normalised through ``guest_key`` /
     ``guest_button``, i.e. through the SAME table the lowering below presses with.
-    Tracking held keys by the raw operation argument instead made the held-key set
-    and the lowering disagree whenever a trajectory spelled the two halves of one
-    key differently -- ``key_down("Return")`` then ``key_up("Enter")``, or
-    ``key_down("KeyA")`` then ``key_up("a")`` -- which the guest would have
-    executed as a matched pair on one key while this rejected it as "key not
-    held".  That is reachable from any grammar that passes rdev names through
-    verbatim, which several deliberately do: normalising the NAMES at the grammar
-    boundary would erase the distinction between ``Alt`` and ``AltLeft``, so the
-    agreement has to be established here, where held state is tracked.
+    Tracking held keys by the raw operation argument instead makes the held-key
+    set and the lowering disagree whenever a trajectory spells the two halves of
+    one key differently -- ``key_down("Return")`` then ``key_up("Enter")``, or
+    ``key_down("KeyA")`` then ``key_up("a")`` -- which the guest executes as a
+    matched pair on one key while this rejects it as "key not held".  Any grammar
+    that passes rdev names through verbatim can reach that, and normalising the
+    NAMES at the grammar boundary would erase the distinction between ``Alt`` and
+    ``AltLeft``, so the agreement is established here, where held state is
+    tracked.
     """
     buttons = set(initial_buttons)
     keys = {guest_key(key) for key in initial_keys}

@@ -1,29 +1,23 @@
 Bootstrap: docker
 From: ubuntu:22.04
 
-# =========================================================================== #
-# A KVM-FREE DESKTOP TIER.
+# A KVM-free desktop tier.
 #
 # Translated from anthropics/claude-quickstarts `computer-use-demo` (MIT):
 # Ubuntu 22.04 + Xvfb / x11vnc / xdotool / mutter / tint2 / noVNC, running as a
 # non-root user with no privileged flags and no /dev/kvm.
 #
-# *** READ THIS BEFORE USING IT FOR ANYTHING THAT PRODUCES A NUMBER. ***
-#
-# This is a BROWSER-AND-APPS-ON-A-DESKTOP runtime.  It is NOT the OSWorld guest
-# VM.  It does not contain the OSWorld guest agent, the OSWorld task setup
-# machinery, or the pinned application versions any OSWorld task was authored
-# against.  Therefore:
+# This is an apps-on-a-desktop runtime, not the OSWorld guest VM: no OSWorld
+# guest agent, no OSWorld task setup machinery, and different application
+# versions from the ones any OSWorld task was authored against.  Therefore:
 #
 #     IT GIVES NO OSWorld-Verified PARITY, EVER.
 #
-# It is a tier BENEATH the KVM tier, for fast iteration on plumbing: does the
+# It is a tier BENEATH the KVM tier, for fast iteration on plumbing -- does the
 # transport reach a guest, does a click land, does the readiness heuristic fire,
-# does the pool lease and retire.  It is NEVER a replacement for the KVM tier,
-# and a benchmark number produced here is not a benchmark number.
+# does the pool lease and retire.
 #
-# THERE IS NO BROWSER IN THIS TIER, and that is a statement of fact rather than an
-# omission to be fixed casually.  On the ubuntu:22.04 base above:
+# THERE IS NO BROWSER IN THIS TIER.  On the ubuntu:22.04 base above:
 #
 #     apt-get install chromium-browser  ->  "Package 'chromium-browser' has no
 #                                            installation candidate" (a snap
@@ -34,23 +28,17 @@ From: ubuntu:22.04
 # Snaps need systemd and a writable /snap, neither of which exists in an Apptainer
 # instance, so none of the three installs a working browser.  Adding one means a
 # third-party PPA or an upstream tarball -- a supply-chain decision, not a package
-# name -- and it must be made deliberately, not by pasting `chromium` into the list
-# below and assuming the build proves it.
+# name.  So this tier can check the transport, the executor, the readiness
+# heuristic and the pool, and cannot check anything browser-shaped.  A browser
+# added here will want a WRITABLE profile directory, and a .sif is read-only, so
+# the instance needs `--writable-tmpfs` (which `ApptainerSandboxProvider` passes
+# by default) or an explicit `--overlay`; a startup crash naming the profile
+# directory is that, and the fix is the overlay, not a change to this file.
 #
-# WHAT THAT MEANS FOR A CALLER: this tier can check the transport, the executor,
-# the readiness heuristic and the pool.  It cannot check anything browser-shaped.
-# If you add a browser, it will want a WRITABLE profile directory, and a .sif is
-# read-only, so the instance will need `--writable-tmpfs` (which
-# `ApptainerSandboxProvider` passes by default) or an explicit `--overlay`; a
-# startup crash mentioning the profile directory is that, and the fix is the
-# overlay rather than a change to this file.
-#
-# Second flagged risk: `apptainer instance start` does not fork the whole startup
-# script the way a Docker ENTRYPOINT does.  %startscript below launches the X
-# stack in the background; if an instance comes up with no display, check that
-# Xvfb actually survived, because a non-daemonising service under
-# `instance start` is the usual cause.
-# =========================================================================== #
+# `apptainer instance start` does not fork the whole startup script the way a
+# Docker ENTRYPOINT does.  %startscript below launches the X stack in the
+# background; if an instance comes up with no display, check that Xvfb survived,
+# because a non-daemonising service under `instance start` is the usual cause.
 
 %labels
     Purpose  non-kvm-desktop-tier

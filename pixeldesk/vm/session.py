@@ -1,43 +1,11 @@
 """One desktop session: an isolated runtime plus a verified reset.
 
-CONSOLIDATION (five implementations -> one).  The generic session logic in each
-predecessor was reimplemented or re-forked; the task-specific halves were not
-generic at all and stay with their owner:
-
-  ``rung1/vm.py``            1,587  KvmFixtureSession: per-task isolation, port
-                                    serialization, start, reset + attested
-                                    receipt, close.  KEPT.  Its Chrome-fixture
-                                    launch, CDP-over-raw-websocket client, and
-                                    browser diagnostics (~900 LOC) are fixture
-                                    content, not session lifecycle -- LEFT BEHIND.
-  ``rung1b/vm.py``              619  ``from ..rung1.transport import
-                                    HttpVmTransport`` -- a fork of rung1 whose own
-                                    body is app fixtures (scroll HTML, drag
-                                    setup, an in-guest HTTP server).  Only its
-                                    guest-script marker protocol is generic; that
-                                    is KEPT as ``GuestScript``.  Fixtures LEFT.
-  ``rung2/vm.py``               451  the same fork lineage, the same split: Calc
-                                    /Writer/Files/Chrome fixtures LEFT, the
-                                    marker protocol already covered.
-  ``desktop/proxy.py``      480+124  a JSON-line subprocess proxy to run a
-                                    third-party env in another interpreter.  Its
-                                    process-GROUP teardown discipline is the best
-                                    of the five and is KEPT as
-                                    ``ProcessGroupReaper``.  The proxy itself is
-                                    LEFT: it exists to bridge to a foreign
-                                    package, which this package has no business
-                                    depending on.
-  ``qemu_fast_reset.py``        549  now ``vm/qemu.py``; its tier-2 "snapshot the
-                                    post-setup state and skip setup next time"
-                                    idea survives as ``reset_to_checkpoint``.
-
-The reset attestation is kept from rung1 and is the least obvious value here: a
-reset that silently no-ops is indistinguishable from a working one unless
-something proves the guest actually rewound.  This session plants a nonce file in
-the guest *before* the reset and requires it to be gone *after*, and hashes the
-runtime's own state on both sides so the generation must advance.  What was
-dropped is the introspection of a specific provider object's ``timings`` list;
-the ``Runtime`` protocol now reports its own checkpoint records.
+A reset that silently no-ops is indistinguishable from a working one unless
+something proves the guest actually rewound.  So this session plants a nonce file
+in the guest *before* the reset and requires it to be gone *after*, and hashes
+the runtime's own state on both sides so the generation must advance.
+``reset_with_receipt`` hands that evidence back; ``consume_receipt`` verifies its
+MAC, its ordering and its single use.
 """
 
 from __future__ import annotations
@@ -145,11 +113,10 @@ def node_port_allocation_lock() -> Iterator[None]:
 class GuestScript:
     """Run a Python program in the guest and read one JSON line back.
 
-    The marker protocol is from ``rung1b``/``rung2``: the guest program prints
-    ``<MARKER><json>`` on a line of its own, and the host reads only that line.
-    It exists because the guest's stdout is shared with anything the program
-    imports -- GTK warnings, X11 chatter, deprecation notices -- so "parse the
-    whole of stdout as JSON" fails intermittently and unreproducibly.
+    The guest program prints ``<MARKER><json>`` on a line of its own and the host
+    reads only that line, because the guest's stdout is shared with anything the
+    program imports -- GTK warnings, X11 chatter, deprecation notices -- so
+    parsing the whole of stdout as JSON fails intermittently and unreproducibly.
     """
 
     def __init__(self, client: OSWorldClient, *, marker: str = GUEST_JSON_MARKER) -> None:
@@ -536,10 +503,9 @@ class DesktopSession:
     def reset_to_checkpoint(self, name: str, *, setup: Any = None) -> HttpGuiTransport:
         """Restore ``name``, creating it from ``setup`` the first time.
 
-        This is the second tier of the fast-reset idea: on the first call for a
-        tag, run the (expensive) per-task setup once and snapshot the result; on
-        every later call, restore that snapshot and skip both the reboot and the
-        setup.
+        On the first call for a tag, the (expensive) per-task setup runs once and
+        the result is snapshotted; every later call restores that snapshot and
+        skips both the reboot and the setup.
         """
         if not self._started:
             raise SessionError("session is not started")
@@ -559,9 +525,8 @@ class DesktopSession:
     def _runtime_observation(self) -> bytes:
         """A stable hash input describing the runtime's externally visible state.
 
-        Deliberately *not* an introspection of a provider's private dictionary,
-        which is what the predecessor did and which made the receipt depend on one
-        provider implementation's internals.
+        Deliberately *not* an introspection of a provider's private state, so the
+        receipt does not depend on one implementation's internals.
         """
         checkpoints = [
             {"name": item.name, "kind": item.kind, "created": item.created_monotonic_ns}

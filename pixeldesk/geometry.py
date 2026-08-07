@@ -8,13 +8,12 @@ imported so this package keeps a zero-dependency floor; keeping them byte-equal
 to upstream is deliberate, so a future upstream fix is a diff and not an
 archaeology exercise.
 
-WHAT IS DELIBERATELY *NOT* COPIED: Harbor's ``CoordinateSpace`` StrEnum.  A
-closed enumeration of coordinate conventions is exactly the wrong shape for this
-package.  Which convention a model emits is a fact about a *codec*, recorded as
-an open field inside that codec, and it is fully consumed by the codec's
-``compile(text, geometry, cursor)`` before an ``Operation`` exists.  The
-functions below are therefore offered to codecs as resolution *tools*; this
-package never inspects, stores, or branches on a coordinate space.
+Harbor's ``CoordinateSpace`` StrEnum is deliberately NOT copied: this package has
+no coordinate-space enum.  Which convention a model emits is an open field inside
+a codec, fully consumed by that codec's ``compile(text, geometry, cursor)``
+before an ``Operation`` exists.  The functions below are offered to codecs as
+resolution *tools*; this package never inspects, stores, or branches on a
+coordinate space.
 """
 
 from __future__ import annotations
@@ -22,9 +21,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-# --------------------------------------------------------------------------- #
 # BEGIN verbatim copy -- Harbor, src/harbor/agents/computer_1/runtime.py
-# --------------------------------------------------------------------------- #
 
 
 @dataclass(slots=True)
@@ -86,9 +83,7 @@ def anthropic_scale_coordinates(
     return (int(x / scale), int(y / scale))
 
 
-# --------------------------------------------------------------------------- #
 # END verbatim copy
-# --------------------------------------------------------------------------- #
 
 
 def clamp_to_desktop(x: int, y: int, geometry: DisplayGeometry) -> tuple[int, int]:
@@ -119,8 +114,7 @@ def resolve_relative(
 ) -> tuple[int, int]:
     """Resolve a relative delta against a cursor into an absolute pixel pair.
 
-    Offered here so that a relative-grammar codec has one obvious place to do
-    the resolution, and so the resolution context (``cursor``, ``geometry``)
-    stays visible as *data* in its signature rather than hiding in a mode flag.
+    The resolution context (``cursor``, ``geometry``) is passed as data rather
+    than carried in a mode flag.
     """
     return clamp_to_desktop(int(cursor[0]) + int(dx), int(cursor[1]) + int(dy), geometry)

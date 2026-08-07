@@ -2,12 +2,11 @@
 
 The method surface -- ``start``/``stop``/``is_ready``/``suspend``/``resume``/
 ``ensure_base``/``fork``/``checkpoint``/``list_checkpoints``/
-``delete_checkpoint`` -- was taken as a *design checklist* from trycua/cua's
-``Runtime``, after reading that project as a reference.  No trycua code is
-imported or copied here; what was worth taking was the shape of the surface, and
-specifically the observation that ``fork`` (copy-on-write children off one warm
-base) and snapshot-rewind are different primitives that a rollout harness needs
-for different reasons:
+``delete_checkpoint`` -- was taken as a design checklist from trycua/cua's
+``Runtime``, read as a reference.  No trycua code is imported or copied here.
+
+``fork`` (copy-on-write children off one warm base) and snapshot-rewind are
+different primitives that a rollout harness needs for different reasons:
 
   * ``checkpoint``/``resume`` serialize N rollouts through one VM: cheap per
     reset (measured 4.4-5.2 s against 13.6-16.6 s for reboot-revert), but the
@@ -123,7 +122,7 @@ class Runtime(Protocol):
         A protocol member rather than something a caller probes with ``getattr``:
         ``DesktopSession.reset_to_checkpoint`` asks this to decide between
         restoring a warm post-setup snapshot and re-running the setup, and a
-        runtime that quietly lacked the method took the slow branch forever
+        runtime that quietly lacked the method would take the slow branch forever
         while looking like it was working.
         """
         ...

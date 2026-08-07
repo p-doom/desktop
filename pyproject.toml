@@ -1,46 +1,23 @@
 [project]
-# `pixeldesk`, NOT `desktop-env`. That name is taken on PyPI by
-# xlang-ai/desktop_env (OSWorld) -- the same distribution name AND the same
-# import name, a different package. This one has no remote and no index
-# presence, so it was resolved only by juergen's `[tool.uv.sources]` path
-# entry, which uv reads and pip does not: `pip install juergen` fetched
-# OSWorld's package and the first codec import died on a missing
-# `desktop_env.geometry`.
-#
-# The rename is a CORRECTNESS fix, not hygiene. `evals/osworld.py` imports
-# OSWorld's `desktop_env.controllers.setup` and `desktop_env.evaluators` to
-# score the benchmark; while this package owned that import name, that import
-# resolved to *this* module and no $OSWORLD_ROOT could fix it -- sys.path
-# cannot override an entry already in sys.modules. Two packages cannot share
-# one import name when a process needs both, and this one needed both.
-#
-# Checked unclaimed before adoption: pypi.org/pypi/pixeldesk/json -> 404, and
-# so are the `pixel-desk` / `pixel_desk` normalisations.
+# Do NOT rename this to `desktop-env` / `desktop_env`. That distribution AND
+# import name belong to xlang-ai/desktop_env (OSWorld), which callers import
+# alongside this package to score the benchmark -- and sys.path cannot override
+# an entry already in sys.modules, so two packages cannot share one import name
+# when a process needs both.
 name = "pixeldesk"
 version = "0.1.0"
 description = "Apply absolute-pixel input operations to a real desktop VM, and reset it. Grammar-free, stdlib-only."
 requires-python = ">=3.12"
 
-# EXACTLY ONE RUNTIME DEPENDENCY, AND THE BAR FOR ADDING A SECOND IS HIGH.
+# One runtime dependency, and the bar for adding a second is high: this
+# package's callers are training and eval stacks with large, mutually
+# incompatible dependency graphs (JAX, torch, CUDA, vLLM pins), and a VM layer
+# that pins broadly becomes a resolver conflict that looks like a training bug.
+# HTTP is therefore urllib.request, and screenshots cross every boundary in this
+# package as raw bytes. Pillow is used in one place, pixeldesk/vm/readiness.py.
 #
-# The constraint exists because this package's callers are training and eval
-# stacks with large, mutually incompatible dependency graphs (JAX pins, torch
-# pins, CUDA pins, vLLM pins). A VM layer that pins broadly becomes a resolver
-# conflict at the worst possible moment, and the failure looks like a training
-# bug. HTTP is therefore urllib.request, and screenshots cross every boundary in
-# this package as raw bytes.
-#
-# Pillow clears the bar on three counts: it does one thing, its correctness
-# criterion is external to us (it decodes an image the way every other tool does,
-# or it is visibly broken), and its import floor is small. It is used in exactly
-# one place -- pixeldesk/vm/readiness.py -- to downsample a screenshot and
-# measure it. The alternative was a hand-written PNG decoder, and that was
-# rejected because a decoder bug is SILENT: it makes readiness report "not
-# ready", which is indistinguishable from a slow VM. Owning a failure mode that
-# mimics infrastructure slowness is worse than owning this dependency.
-#
-# Two external BINARIES are also assumed, deliberately, because they are not
-# Python and cannot be vendored: qemu-system-x86_64 and apptainer.
+# Two external BINARIES are also assumed, because they are not Python and cannot
+# be vendored: qemu-system-x86_64 and apptainer.
 dependencies = ["pillow>=10"]
 
 [project.optional-dependencies]
@@ -59,10 +36,9 @@ include = ["pixeldesk*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The pool does its startup, retirement and reaping on daemon threads, so an
-# exception there is invisible: the thread dies, the pool's own error counters
-# never learn, and a leaked VM looks like a healthy one. An escaping thread
-# exception is a test failure here, not a warning.
+# The pool does its startup, retirement and reaping on daemon threads, where an
+# exception is otherwise invisible: the thread dies, the pool's error counters
+# never learn, and a leaked VM looks like a healthy one.
 filterwarnings = [
     "error::pytest.PytestUnhandledThreadExceptionWarning",
 ]

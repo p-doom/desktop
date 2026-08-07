@@ -1,4 +1,4 @@
-"""The codec seam: the *only* place a grammar is allowed to exist.
+"""The codec seam: the contract a grammar reaches this package through.
 
 This module defines the contract, not any grammar.  A codec lives outside this
 package -- in whatever repository owns the model being trained -- and reaches
@@ -6,10 +6,9 @@ this package through exactly one function:
 
     codec.compile(text, geometry, cursor) -> tuple[Operation, ...]
 
-Everything grammar-shaped happens on the left of that arrow.  Absolute pixels
-come out on the right.  The resolution context (screen geometry, current cursor)
-arrives as *data* in the call, so a codec never has to be configured into a mode
-and this package never has to know which mode it is in.
+Everything grammar-shaped happens on the left of that arrow; absolute pixels come
+out on the right.  The resolution context (screen geometry, current cursor)
+arrives as *data* in the call, so a codec is never configured into a mode.
 
 The action-set skeleton below is vendored (~250 LOC) from BrowserGym's
 ``browsergym/core/action/`` (ServiceNow, Apache-2.0): declare the grammar once,
@@ -40,19 +39,9 @@ from typing import Any, Callable, Protocol, runtime_checkable
 from .geometry import DisplayGeometry
 from .ir import Operation
 
-# A handler turns one parsed call's arguments into resolved operations.  This is
-# ``ActionSet``'s dispatch table below and nothing else: it is how a *declared
-# action set* lowers ``name(args)`` into ``Operation``s without a ``match`` on an
-# action name anywhere in shared code.
-#
-# IT IS NOT PART OF THE ``Codec`` PROTOCOL, deliberately.  A codec does not
-# dispatch; it ``compile``s to ``Operation``s, and the Operation vocabulary is
-# closed by physics (a pointer moves, a button goes down, a wheel turns) rather
-# than open per grammar.  Lowering an ``Operation`` is therefore a literal
-# ``if kind ==`` chain in ``execute/guest_program.py``, which is correct: the set
-# it switches over is fixed and shared, not grammar-specific.  Requiring
-# ``handlers`` on a ``Codec`` described a second dispatch engine that does not
-# exist, and made ``isinstance(codec, Codec)`` false for every real codec.
+# A handler turns one parsed call's arguments into resolved operations.  It
+# belongs to ``ActionSet``'s dispatch table below and NOT to the ``Codec``
+# protocol: a codec does not dispatch, it ``compile``s to ``Operation``s.
 Handler = Callable[..., tuple[Operation, ...]]
 
 
@@ -60,19 +49,18 @@ Handler = Callable[..., tuple[Operation, ...]]
 class Codec(Protocol):
     """One grammar, in both directions, plus its own self-description.
 
-    ``@runtime_checkable`` makes ``isinstance(codec, Codec)`` a legal gate, so
-    every member here must be one a real codec actually exposes, in the shape it
-    exposes it.  A protocol member that no implementation can satisfy is worse
-    than no protocol: the gate reads as "this is not a codec" for every codec.
+    ``@runtime_checkable``, so ``isinstance(codec, Codec)`` is a legal gate and
+    every member here must be one a real codec exposes, in the shape it exposes
+    it.
     """
 
     name: str
 
     #: Decoder stop strings this grammar needs to terminate cleanly.  An
-    #: ATTRIBUTE, not a method: it is a fixed property of the grammar's surface
-    #: syntax, decided when the grammar is written, and every codec spells it as
-    #: a class-level tuple.  Empty is the common case -- a grammar whose action
-    #: line may be preceded by reasoning has no token sequence that ends a turn.
+    #: ATTRIBUTE, not a method: a fixed property of the grammar's surface syntax,
+    #: which every codec spells as a class-level tuple.  Empty is the common case
+    #: -- a grammar whose action line may be preceded by reasoning has no token
+    #: sequence that ends a turn.
     stop_sequences: tuple[str, ...]
 
     def parse(self, text: str) -> object:
@@ -82,8 +70,7 @@ class Codec(Protocol):
     def format(self, action: object) -> str:
         """A structured action -> model output text.  The inverse of ``parse``.
 
-        This direction is what generates supervised training targets, and it is
-        the member most action libraries omit.
+        This direction is what generates supervised training targets.
         """
         ...
 
@@ -153,10 +140,9 @@ def _resolved_signature(func: Callable[..., Any]) -> inspect.Signature:
         quotes -- and that string goes straight into ``describe()``, which IS the
         system prompt.
 
-    So the grammar's self-description silently disagreed with the grammar.  The
-    fallback keeps a codec whose annotations cannot be resolved in this scope
-    (a forward reference to something not importable here) working exactly as
-    before rather than failing to describe itself at all.
+    The fallback keeps a codec whose annotations cannot be resolved in this scope
+    (a forward reference to something not importable here) describing itself at
+    all, rather than raising.
     """
     try:
         return inspect.signature(func, eval_str=True)
@@ -228,13 +214,10 @@ def parse_calls(text: str, *, strict: bool = False) -> list[ParsedCall]:
     non-call lines are skipped, which is what a chatty model needs.
 
     A line may carry MORE THAN ONE call -- ``click('left'); move_to(1, 2)`` -- and
-    all of them are returned.  Parsing was in ``eval`` mode, which accepts exactly
-    one expression, so such a line was a ``SyntaxError``: strict mode said so, but
-    non-strict mode could not tell it apart from prose and skipped it, turning two
-    actions the model emitted into ZERO with nothing logged.  ``exec`` mode plus a
-    walk over the statements keeps every other rejection identical -- an argument
-    is still evaluated by ``literal_eval`` alone, and anything that is not a bare
-    call is still refused -- while making a semicolon separator mean what it says.
+    all of them are returned.  Parsing is in ``exec`` mode for that reason;
+    ``eval`` mode accepts exactly one expression, so a semicolon-separated line
+    was a ``SyntaxError`` that non-strict mode could not tell apart from prose and
+    silently skipped.
     """
     calls: list[ParsedCall] = []
     for line in text.splitlines():
@@ -255,9 +238,9 @@ def parse_calls(text: str, *, strict: bool = False) -> list[ParsedCall]:
                 continue
             try:
                 # ``**mapping`` arrives as a keyword whose ``arg`` is None.
-                # Skipping those SILENTLY DISCARDS the arguments and yields a call
-                # that looks well-formed with no arguments at all, so it is
-                # rejected like any other non-literal argument instead.
+                # Skipping those would silently discard the arguments and yield a
+                # call that looks well-formed with none at all, so reject it like
+                # any other non-literal argument.
                 if any(kw.arg is None for kw in node.keywords):
                     raise ValueError("** unpacking is not a literal argument")
                 args = tuple(ast.literal_eval(arg) for arg in node.args)
@@ -312,7 +295,7 @@ class ActionSet:
 
     @property
     def handlers(self) -> dict[str, Handler]:
-        """The dispatch table a ``Codec`` exposes.  No ``match`` anywhere."""
+        """This action set's dispatch table: name -> declaring function."""
         return dict(self.functions)
 
     def validate(self, calls: list[ParsedCall]) -> list[ParsedCall]:
@@ -395,10 +378,8 @@ class ActionSet:
     def to_tool_description(self, *, api: str = "openai", add_examples: bool = True) -> list[dict]:
         """Tool-JSON for the OpenAI or Anthropic wire format.
 
-        An unrecognised ``api`` is an error, not the OpenAI shape.  It used to
-        fall back to the ``parameters`` key while skipping ``"type": "function"``,
-        which is neither format: a typo produced a THIRD wire shape, served to a
-        model, with nothing anywhere saying the requested API was not understood.
+        An unrecognised ``api`` raises rather than falling back to either shape,
+        so a typo cannot serve a model a third, half-formed wire format.
         """
         schema_keys = {"openai": "parameters", "anthropic": "input_schema"}
         if api not in schema_keys:

@@ -8,15 +8,15 @@ copied from NeMo-Gym (``NVIDIA-NeMo/Gym``, Apache-2.0,
 so they lift cleanly onto a zero-dependency floor.
 
 ``ConnectableProvider`` is the reason to copy rather than reinvent.
-``serialize_handle`` / ``connect`` rebuild a live handle **in another process, on
-another node**, from a JSON descriptor.  That is exactly the cross-node primitive
+``serialize_handle`` / ``connect`` rebuild a live handle in another process, on
+another node, from a JSON descriptor.  That is exactly the cross-node primitive
 a multi-node rollout fleet otherwise hand-rolls with status files and a
 convention, and getting it wrong shows up as a rollout that talks to a sandbox
 that has already been recycled.
 
-*** WHAT WAS NOT TAKEN: NeMo-Gym's OSWorld path. ***  It hard-raises unless the
-provider name is literally ``"docker"``, which makes it useless on a cluster where
-there is no daemon and no root.  The Apptainer provider below is ours.
+NeMo-Gym's OSWorld path is NOT taken: it hard-raises unless the provider name is
+literally ``"docker"``, which makes it useless on a cluster with no daemon and no
+root.  The Apptainer provider below is ours.
 """
 
 from __future__ import annotations
@@ -36,9 +36,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
-# --------------------------------------------------------------------------- #
 # BEGIN copy -- NeMo-Gym, nemo_gym/sandbox/providers/base.py (Apache-2.0)
-# --------------------------------------------------------------------------- #
 
 
 class SandboxStatus(str, Enum):
@@ -279,9 +277,7 @@ class ConnectableProvider(Protocol):
         ...
 
 
-# --------------------------------------------------------------------------- #
 # END copy
-# --------------------------------------------------------------------------- #
 
 
 #: Fence around a downloaded base64 payload.  Deliberately not base64-alphabet
@@ -301,12 +297,11 @@ DEFAULT_TRANSFER_TIMEOUT_S = 300.0
 
 #: Largest file this channel will move, in bytes.
 #:
-#: NOT a tuning knob: it is the honest limit of the mechanism.  Both directions
-#: buffer the entire file AND its ~33%-larger base64 form in host memory, so the
-#: peak cost is roughly 2.3x the file size -- fine for the PNG screenshots this
-#: mostly carries, and untenable for the qcow2 overlays the header names, where a
-#: 2.7 GB overlay would want ~6 GB of RAM. Refusing by name beats being OOM-killed
-#: mid-rollout. Moving overlays needs a streaming path; this is the loud interim.
+#: NOT a tuning knob: it is the limit of the mechanism.  Both directions buffer
+#: the entire file AND its ~33%-larger base64 form in host memory, so the peak
+#: cost is roughly 2.3x the file size -- fine for the PNG screenshots this mostly
+#: carries, untenable for a 2.7 GB qcow2 overlay, which would want ~6 GB of RAM.
+#: Moving overlays needs a streaming path; raising this cap is not it.
 MAX_TRANSFER_BYTES = 256 * 1024 * 1024
 
 
@@ -453,12 +448,11 @@ class ApptainerSandboxProvider:
             stdin=stdin,
         )
 
-    # BINARY-SAFE, and this is not incidental. The payloads that actually move
-    # through here are PNG screenshots and qcow2 overlays, and piping raw bytes
-    # over ``apptainer exec`` cannot carry them: stdout is decoded as UTF-8 with
+    # Both directions go through base64, at a ~33% size cost, because piping raw
+    # bytes over ``apptainer exec`` cannot carry the PNG screenshots and qcow2
+    # overlays that move through here: stdout is decoded as UTF-8 with
     # ``errors="replace"``, so any invalid sequence becomes U+FFFD and the bytes
-    # are gone. Both directions go through base64, at a ~33% size cost that is
-    # worth paying to make the channel total.
+    # are gone.
 
     async def upload_file(
         self,

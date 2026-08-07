@@ -3,18 +3,17 @@
 An ``Operation`` is a *resolved* input event.  Every coordinate it carries is an
 absolute screen pixel in the guest's own framebuffer.  Whatever grammar produced
 it -- absolute clicks, relative deltas, a 0..999 normalized grid, a
-downscaled-screenshot convention -- that grammar has already been applied and
-discarded by the time an ``Operation`` exists.  Nothing in this package can tell
-which grammar it came from, and nothing here is allowed to care.
+downscaled-screenshot convention -- has already been applied and discarded by the
+time an ``Operation`` exists.
 
-``kind`` is an OPEN vocabulary, deliberately a ``str`` and never an ``Enum``.  A
-codec may introduce a kind this package has never heard of; the executor will
-reject the kinds it cannot lower, and adding a kind is a change in exactly one
-handler table rather than a change to a closed type that every importer shares.
+``kind`` is an OPEN vocabulary, a ``str`` and never an ``Enum``.  A codec may
+introduce a kind this package has never heard of; the executor rejects the kinds
+it cannot lower, and adding a kind is a change in one handler table rather than a
+change to a closed type that every importer shares.
 
-The canonical kinds this package's own executor lowers are listed in
-``CANONICAL_KINDS`` below.  That list is documentation and a lowering contract,
-not a validator: ``Operation("my_new_kind", ())`` is a legal value.
+``CANONICAL_KINDS`` below lists the kinds this package's own executor lowers.  It
+is a lowering contract, not a validator: ``Operation("my_new_kind", ())`` is a
+legal value.
 """
 
 from __future__ import annotations
@@ -42,22 +41,17 @@ class Operation:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "Operation":
-        """The inverse of ``as_dict``.  Both keys are required.
+        """The inverse of ``as_dict``.
 
-        ``args`` used to default to ``()`` when absent, which turned a truncated
-        receipt into a well-formed ``Operation`` of the wrong arity -- a
-        ``move_to`` with no destination, rejected later and somewhere else, or
-        not at all.
+        Both keys are required, so a truncated receipt cannot become a
+        well-formed ``Operation`` of the wrong arity -- a ``move_to`` with no
+        destination, rejected later and somewhere else, or not at all.
         """
         return cls(str(payload["kind"]), tuple(payload["args"]))
 
 
-# The canonical kinds, with their argument shapes.
-#
-# Every entry here is lowered by ``pixeldesk.execute.guest_program``.  The
-# coordinates in ``move_to`` and ``drag`` are absolute pixels; there is no
-# relative member, because resolution happens inside a codec's ``compile`` and
-# never inside this package.
+# Argument shapes for the kinds ``pixeldesk.execute.guest_program`` lowers.  No
+# relative member: resolution happens inside a codec's ``compile``.
 
 CANONICAL_KINDS: dict[str, str] = {
     "move_to": "(x: int, y: int) -- absolute pixel destination",
@@ -144,16 +138,11 @@ def scroll_deltas(args: tuple) -> tuple[int, int]:
     """Read a ``scroll`` operation's args.  Exactly ``(dx, dy)``, nothing else.
 
     The one place that reads them, so a producer and a consumer cannot disagree
-    silently.  The failure that motivates a single reader is real and was
-    observed as a contract mismatch between layers: reading ``args[0]`` as
-    vertical ticks turns a codec's ``scroll(0, 3)`` into ``scroll(0)`` -- a
-    silent no-op on every scroll, with no error anywhere.
-
-    A one-axis ``(clicks,)`` form used to be accepted here too, disambiguated by
-    arity.  Nothing in this package emits it: the guest program traces
-    ``[dx, dy]``, every transport appends a two-axis operation, and ``scroll``
-    above builds one.  A grammar that emits a bare tick count now gets an error
-    rather than a second, differently-shaped contract to keep in agreement.
+    silently: reading ``args[0]`` as vertical ticks turns a codec's
+    ``scroll(0, 3)`` into ``scroll(0)`` -- a silent no-op on every scroll, with no
+    error anywhere.  A one-axis ``(clicks,)`` form is deliberately not accepted,
+    so a grammar that emits a bare tick count gets an error rather than a second,
+    differently-shaped contract to keep in agreement.
     """
     if len(args) != 2:
         raise ValueError(f"scroll requires exactly (dx, dy), got {args!r}")

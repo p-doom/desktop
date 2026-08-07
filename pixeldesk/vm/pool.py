@@ -1,18 +1,16 @@
 """A prewarming pool of desktop sessions, with leases and a status file.
 
-Lifted nearly unchanged from ``rl/osworld/desktop/pool.py`` (895 LOC) and
-``rl/runtime/ports.py`` (155 LOC).  It transplanted cleanly for one reason worth
-recording: the pool's entire requirement of a session is ``close() -> None``.
-It is generic over ``DesktopSessionEnv``, so ``DesktopSession``, a raw
-``QemuRuntime``, or a caller's own wrapper all satisfy it with no adapter.
+The pool's entire requirement of a session is ``close() -> None``.  It is generic
+over ``DesktopSessionEnv``, so ``DesktopSession``, a raw ``QemuRuntime``, or a
+caller's own wrapper all satisfy it with no adapter.
 
-What it buys over constructing sessions on demand: a VM boot is 13-16 s and a
-first boot is worse, so a rollout that starts by booting pays that per rollout.
-The pool keeps a floor of ready sessions warm in the background, hands them out
-under a lease with an activity timeout, retires them after a bounded number of
-rollouts (bounding drift on a long-lived guest), and reaps leases whose holder
-died without releasing.  The status file makes all of that inspectable from
-another process, which is how a multi-node run is debugged at all.
+A VM boot is 13-16 s and a first boot is worse, so a rollout that starts by
+booting pays that per rollout.  The pool keeps a floor of ready sessions warm in
+the background, hands them out under a lease with an activity timeout, retires
+them after a bounded number of rollouts (bounding drift on a long-lived guest),
+and reaps leases whose holder died without releasing.  The status file makes all
+of that inspectable from another process, which is how a multi-node run is
+debugged.
 
 The port allocator is vendored here rather than imported, and its shape matters:
 a *file-locked slot*, not ``bind(0)``.  ``bind(0)`` hands out a port that is then
@@ -46,17 +44,13 @@ RetireReason = Literal["retired", "failed"]
 class WorkerPorts:
     """One aligned block of host ports for a single desktop.
 
-    These are exactly the four ports ``QemuRuntime`` forwards, and no more.  A
-    fifth, ``qemu_vnc``, used to be reserved and probed here and then never
-    forwarded by anything: the runtime boots ``-display none -nographic``, so QEMU
-    has no VNC server to expose, and exposing one would mean dropping
-    ``-display none`` -- a change to every VM's command line, not a port
-    allocation.  Reserving it cost a port per slot and, worse, made the lease
-    describe a service that does not exist.
+    Exactly the four ports ``QemuRuntime`` forwards, and no more.  There is no
+    QEMU-side VNC port: the runtime boots ``-display none -nographic``, so
+    exposing one would mean changing every VM's command line rather than
+    allocating a port.
 
-    The stride is deliberately left at 10, so removing it does NOT move any
-    existing slot's port numbers; ``base + 4 .. base + 9`` is simply unused
-    headroom now.
+    The stride stays at 10 even though only four ports are used, so ``base + 4 ..
+    base + 9`` is unused headroom and no existing slot's port numbers move.
     """
 
     server: int
@@ -87,13 +81,10 @@ class PortLease:
     def release(self) -> None:
         """Drop the advisory lock and remove the lease's own working directory.
 
-        The directory used to be left behind: the lock was released and the slot
-        became reusable, but ``runtime_dir`` accumulated one ``w<pid>_<slot>``
-        directory per process forever, on a shared filesystem.  Only the tree this
-        lease created is removed, and only if it is empty of anything a session
-        still owns -- ``rmtree`` is deliberately NOT used, so a session that failed
-        to clean up its own scratch leaves visible evidence instead of having it
-        silently deleted underneath the diagnosis.
+        Only the tree this lease created is removed, and only if it is empty.
+        ``rmtree`` is deliberately NOT used, so a session that failed to clean up
+        its own scratch leaves visible evidence instead of having it deleted
+        underneath the diagnosis.
         """
         if self._released:
             return
@@ -535,14 +526,10 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
             self._write_status_locked()
             self._condition.notify_all()
 
-        # One session that will not close must not strand the others.  A bare loop
-        # here aborted on the first raising ``close()``, so every LATER session was
-        # never closed and its port block was never released -- a leaked VM, its
-        # memory and four host ports per pool shutdown -- and the exception escaped
-        # ``close()`` on top of that.  ``_retire_session`` already collects instead
-        # of propagating; this matches it, and the failures land in the status file
-        # rather than in an exception, because a teardown that raises halfway is how
-        # the leak happened.
+        # One session that will not close must not strand the others: aborting on
+        # the first raising ``close()`` leaks every later session's VM, memory and
+        # port block.  Failures are collected into the status file rather than
+        # raised, matching ``_retire_session``.
         failures: list[str] = []
         for session in sessions:
             try:
@@ -676,9 +663,9 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
             self._condition.notify_all()
 
         if close_immediately:
-            # This runs on a daemon startup thread, so an unguarded raise here
-            # died with only an unhandled-thread traceback: the pool's own error
-            # counters never learned that a session failed to close.
+            # This runs on a daemon startup thread, so an unguarded raise would
+            # surface only as an unhandled-thread traceback and the pool's own
+            # error counters would never learn that a session failed to close.
             try:
                 _close_session_resources(session)
             except Exception as exc:

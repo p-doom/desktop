@@ -1,20 +1,15 @@
 """The transport seam: how operations reach a guest, and how to test without one.
 
-``GuiTransport`` is lifted from ``rung1/executor.py:10-25``.  It is worth keeping
-verbatim in shape for one reason visible in the original: it mentions no
-coordinate convention anywhere.  Every member takes pixels or names, so the same
-protocol serves an absolute-coordinate model and a relative one with no changes.
+``GuiTransport`` mentions no coordinate convention anywhere -- every member takes
+pixels or names -- so the same protocol serves an absolute-coordinate model and a
+relative one with no changes.
 
-``RecordingTransport`` is kept deliberately.  Eight test modules depended on it
-upstream, and it is the entire reason the executor is testable without a VM: it
-implements the same held-state machine and the same lowering, in-process, so a
-test can assert on the exact operation sequence an action produces.  Deleting it
-would make every executor test require KVM.
+``RecordingTransport`` implements the same held-state machine and the same
+lowering, in-process, so a test can assert on the exact operation sequence an
+action produces without a VM in the loop.
 
-HTTP is ``urllib.request`` -- not ``requests`` -- so the package has no runtime
-dependencies.  The predecessor already did this in ``HttpVmTransport``; the RL
-path's client did not, and that difference is one of the two reasons the two
-clients could not be merged upstream.
+HTTP is ``urllib.request``, not ``requests``, so the package has no runtime
+dependency for it.
 """
 
 from __future__ import annotations
@@ -46,14 +41,11 @@ from .keymap import guest_button, guest_key
 class GuiTransport(Protocol):
     """Everything the executor needs from a guest.  No coordinate convention.
 
-    ``glide_to`` and ``hscroll`` are members like the rest.  They used to be
-    documented as optional capabilities "probed with ``getattr`` by whoever
-    dispatches" -- but nothing in this package probes for them, both transports
-    implement them, and ``compile_atomic_guest_program`` emits
-    ``pyautogui.moveTo(duration=)`` and ``pyautogui.hscroll`` unconditionally.
-    A transport without them therefore does not half-work; it raises inside the
-    guest program, which is the honest outcome and the one the contract should
-    say out loud.
+    ``glide_to`` and ``hscroll`` are required members, not optional capabilities:
+    nothing here probes for them, and ``compile_atomic_guest_program`` emits
+    ``pyautogui.moveTo(duration=)`` and ``pyautogui.hscroll`` unconditionally, so
+    a transport without them raises inside the guest program rather than
+    half-working.
     """
 
     audit: InputAudit
@@ -159,13 +151,10 @@ class HttpGuiTransport:
     ) -> AtomicExecutionResult:
         """Validate the marker, the schema, and the payload's self-consistency.
 
-        Bounded on purpose.  The predecessor asserted, on every single action,
-        that the guest's X-injection stream matched one preregistered
-        experiment's expected event ordering -- ~900 lines of drift checks that
-        belonged to a click investigation, not to a general executor.  The guest
-        still *reports* all of that evidence (see ``x_injection_evidence``); this
-        layer now only refuses payloads that are structurally unusable or that
-        contradict themselves.
+        Deliberately bounded: this layer refuses only payloads that are
+        structurally unusable or self-contradictory, and does not check the
+        guest's X-event ordering.  The guest still *reports* that evidence (see
+        ``x_injection_evidence``) for a caller who wants to.
         """
         output = result.get("output")
 
@@ -525,9 +514,8 @@ class RecordingTransport:
                     dx, dy = scroll_deltas(args)
                     # ONE trace operation carrying BOTH axes, exactly as the guest
                     # program records it.  Routing through self.scroll/self.hscroll
-                    # instead would append two operations for a diagonal scroll and
-                    # none at all for ``scroll(0, 0)``, so a test asserting on this
-                    # double's operation sequence would not match the guest's.
+                    # would append two operations for a diagonal scroll and none at
+                    # all for ``scroll(0, 0)``, diverging from the guest.
                     self.audit.scroll_total += dy
                     self.audit.operations.append(Operation("scroll", (dx, dy)))
                     primitives.append(
@@ -646,12 +634,9 @@ class RecordingTransport:
                 failure_kind = "infrastructure"
             cleanup_attempted = True
             # The guest's cleanup calls ``keyUp``/``mouseUp`` for everything it
-            # touched WITHOUT tracing the releases, so neither does this.  The
-            # double exists so a test can assert the exact sequence the guest
-            # produces, and the failure path is one a test needs to compare too:
-            # recording releases here put operations in the trace that no guest
-            # ever reports, which is a divergence in the one direction the double
-            # is not allowed to have.
+            # touched WITHOUT tracing the releases, so neither does this.
+            # Recording them here would put operations in the trace that no guest
+            # ever reports, on the failure path a test needs to compare.
             self.audit.held_keys.clear()
             self.audit.held_buttons.clear()
         final_mask = pointer_mask_for_buttons(self.audit.held_buttons)

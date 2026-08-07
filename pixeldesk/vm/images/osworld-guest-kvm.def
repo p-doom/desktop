@@ -1,22 +1,18 @@
 Bootstrap: docker
 From: ubuntu:22.04
 
-# =========================================================================== #
-# THE KVM TIER'S HOST-SIDE CONTAINER.
+# The KVM tier's host-side container.
 #
 # This container does NOT contain a desktop.  It contains QEMU and the tools
-# `desktop_env.vm.qemu` shells out to; the desktop lives inside the guest qcow2
-# image that QEMU boots, and that image is an input, not a layer.
+# `pixeldesk.vm.qemu` shells out to; the desktop lives inside the guest qcow2
+# image that QEMU boots, and that image is an input, not a layer.  The guest
+# image is what determines benchmark parity -- its application versions, its
+# in-VM agent, its display geometry -- so it must be a pinned artifact that a
+# rebuild of this container cannot alter.
 #
-# The separation is the point.  The guest image is the thing that determines
-# benchmark parity -- its application versions, its in-VM agent, its display
-# geometry -- so it must be a pinned artifact that a rebuild of this container
-# cannot alter.  Baking a desktop in here would mean every container rebuild
-# silently changed what a benchmark number means.
-#
-# REQUIREMENTS AT RUN TIME (not build time):
+# Requirements at RUN time (not build time):
 #   * /dev/kvm readable and writable by the invoking user.  Without it,
-#     QemuRuntime falls back to `-accel tcg`, which works and is ~10x slower and
+#     QemuRuntime falls back to `-accel tcg`, which works, is ~10x slower, and
 #     is NOT valid for any timing or parity measurement.
 #   * a bind mount for the guest qcow2 (read-only is fine and preferable: the VM
 #     boots with `snapshot=on`, so it never writes the backing file).
@@ -27,7 +23,6 @@ From: ubuntu:22.04
 #   apptainer exec --bind /path/to/images:/images:ro --bind "$SCRATCH":/scratch \
 #       --env TMPDIR=/scratch osworld-guest-kvm.sif <your command>
 # No --fakeroot and no privileged flags: QEMU with KVM needs only the device.
-# =========================================================================== #
 
 %labels
     Purpose  kvm-tier-host-container

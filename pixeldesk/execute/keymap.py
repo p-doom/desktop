@@ -1,26 +1,13 @@
-"""One key/button name table, replacing three.
+"""One key and pointer-button name table, and the operations built from it.
 
-CONSOLIDATION (three implementations -> one):
+The tables below are the union of the spellings different trajectory recorders
+emit -- rdev / DOM ``KeyboardEvent.code`` names, computer-use aliases, bare X11
+names -- resolved in the fixed order ``guest_key`` documents, so a trajectory
+recorded under one spelling and replayed under another round-trips.
 
-  * ``rung1/transport.py``            ``_KEYS`` (19 entries) + ``pyautogui_key``
-                                      -- 51 call sites
-  * ``eval/osworld_vm_client.py``     ``_RDEV_TO_PYAUTOGUI`` (35) +
-                                      ``_COMPUTER_USE_KEY_ALIASES`` (30) +
-                                      ``_MOUSE_BUTTON_NAMES`` -- 44 call sites
-  * RL ``rl/computer_use/actions.py`` inline lowercasing + button validation
-                                      -- 22 call sites
-
-The three disagreed in ways that mattered: the first knew ``Key<X>`` but not
-``Num<N>``/``Digit<N>``, the second knew all three plus punctuation names and a
-separate uppercase-alias table, and the third only lowercased.  A trajectory
-recorded through one and replayed through another therefore did not round-trip.
-The union is below, with the shapes tried in a fixed order.
-
-The unified surface emits ``Operation`` values, never pyautogui code strings.
-All three predecessors returned source text -- ``"pyautogui.keyDown('ctrl')"`` --
-which forced every consumer to concatenate code and made the guest program a
-string-splicing exercise.  The one place that legitimately needs pyautogui source
-is ``guest_program.py``, which owns that translation for the whole package.
+This module emits ``Operation`` values, never pyautogui code strings.  The one
+place that needs pyautogui source is ``guest_program.py``, which owns that
+translation for the whole package.
 """
 
 from __future__ import annotations
@@ -30,9 +17,9 @@ import re
 from ..ir import Operation
 
 
-#: Explicit event-name -> guest key name.  Union of the three predecessor tables;
-#: keys are rdev / DOM ``KeyboardEvent.code`` spellings, values are the pinned
-#: guest backend's (pyautogui's) names.
+#: Explicit event-name -> guest key name.  Keys are rdev / DOM
+#: ``KeyboardEvent.code`` spellings, values are the pinned guest backend's
+#: (pyautogui's) names.
 KEY_NAMES: dict[str, str] = {
     # modifiers
     "ControlLeft": "ctrlleft",
@@ -64,7 +51,7 @@ KEY_NAMES: dict[str, str] = {
     "PageDown": "pagedown",
     "Home": "home",
     "End": "end",
-    # punctuation (present only in the eval client's table)
+    # punctuation
     "Comma": ",",
     "Period": ".",
     "Slash": "/",
@@ -79,13 +66,11 @@ KEY_NAMES: dict[str, str] = {
 }
 
 #: Case-insensitive aliases a model is likely to emit in prose-ish grammars.
-#: Kept as a second table because the two are matched DIFFERENTLY: ``KEY_NAMES``
+#: A separate table because the two are matched DIFFERENTLY: ``KEY_NAMES``
 #: exactly, this one on ``.upper()``.  Merging them would make the exact table
-#: case-insensitive, and then ``Alt`` could no longer resolve differently from
-#: any other casing -- which matters for the sided names, where an exact
-#: ``MetaLeft`` must stay ``winleft`` while a loose ``META`` means ``win``.
-#: (The twelve entries that currently overlap by casing agree on their value, so
-#: no *present* mapping depends on the split; the resolution ORDER does.)
+#: case-insensitive, and then a sided name could no longer resolve differently
+#: from a loose one -- an exact ``MetaLeft`` must stay ``winleft`` while a loose
+#: ``META`` means ``win``.
 KEY_ALIASES: dict[str, str] = {
     "CTRL": "ctrl",
     "CONTROL": "ctrl",
@@ -124,15 +109,13 @@ _FUNCTION_KEY = re.compile(r"^F([1-9]|1[0-9]|2[0-4])$")
 #: ``KEY_NAMES`` folded to upper case, consulted only after the exact and alias
 #: tables have both missed.
 #:
-#: Without it, 20 of the 38 ``KEY_NAMES`` entries broke under a change of case and
-#: broke SILENTLY: the fallback lowercases an unrecognised name, so
-#: ``guest_key("comma")`` returned ``"comma"`` -- which pyautogui does not know, so
-#: the keystroke was simply dropped -- while ``guest_key("Comma")`` returned
-#: ``","``.  Every arrow, both sided control/meta modifiers, ``AltGr`` and all
-#: eleven punctuation names were affected, i.e. exactly the keys a computer-use
-#: model presses most.  Folding is a FALLBACK rather than a replacement for the
-#: exact lookup so that a sided name stays distinguishable from a loose one:
-#: ``MetaLeft`` is ``winleft`` while ``META`` is ``win``.
+#: Without it a differently-cased event name fails SILENTLY: the last-resort
+#: fallback lowercases an unrecognised name, so ``guest_key("comma")`` yields
+#: ``"comma"`` -- which pyautogui does not know, so the keystroke is dropped --
+#: while ``guest_key("Comma")`` yields ``","``.  Folding is a FALLBACK rather
+#: than a replacement for the exact lookup so that a sided name stays
+#: distinguishable from a loose one: ``MetaLeft`` is ``winleft``, ``META`` is
+#: ``win``.
 _KEY_NAMES_FOLDED: dict[str, str] = {}
 for _name, _guest_name in KEY_NAMES.items():
     # First declaration wins, so the table stays deterministic if a later entry

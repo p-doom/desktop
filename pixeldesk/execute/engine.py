@@ -1,19 +1,14 @@
 """Apply operations to a guest and hand back a receipt.
 
-NEW LOGIC.  The two predecessor executors (``NativeAbsoluteExecutor``,
-``CompactRawExecutor``) each fused three jobs: parse a specific grammar, resolve
-its coordinates, and drive the transport.  Only the third belongs here.  This
-engine therefore starts from resolved ``Operation``s, and its optional
-``apply_text`` reaches a grammar only through the ``Codec`` protocol -- so the
-engine's own code contains no action names, no ``match`` on a grammar, and no
-coordinate convention.
+The engine starts from resolved ``Operation``s and drives a transport, so its own
+code contains no action names, no ``match`` on a grammar, and no coordinate
+convention.  Its optional ``apply_text`` reaches a grammar only through the
+``Codec`` protocol.
 
-The cursor-readback verification is preserved from ``CompactRawExecutor``, where
-it earned its place: the guest reports its own before/after cursor, and the host
-reads the cursor independently on both sides.  A disagreement means the pointer
-moved outside the action, which is the failure mode a delta-resolving grammar
-cannot otherwise detect.  It is preserved *generically* here rather than only for
-one grammar.
+Every action is verified by cursor readback: the guest reports its own
+before/after cursor, and the host reads the cursor independently on both sides.
+A disagreement means the pointer moved outside the action, which is the failure
+mode a delta-resolving grammar cannot otherwise detect.
 """
 
 from __future__ import annotations
@@ -200,10 +195,9 @@ def _require_click_backend_parameter(transport: GuiTransport) -> None:
     one XTest stream and the transport emits whichever one it pinned.
 
     Decided by inspecting the signature at construction rather than by calling and
-    catching ``TypeError``.  A ``try/except TypeError`` around the call would also
-    swallow a genuine ``TypeError`` raised from *inside* the transport -- turning a
-    real bug into a silent retry with different arguments, which is the worst
-    possible way to learn about it.
+    catching ``TypeError``, which would also swallow a genuine ``TypeError`` raised
+    from *inside* the transport and turn a real bug into a silent retry with
+    different arguments.
     """
     try:
         signature = inspect.signature(transport.execute_atomic)

@@ -1,6 +1,6 @@
 """A local QEMU runtime with QMP snapshots, CoW forks, and a TCG fallback.
 
-Measured on the pinned guest, and the numbers are the reason it exists:
+Measured on the pinned guest:
 
     kill+reboot revert          13.6 - 16.6 s
     savevm (RAM+disk snapshot)   3.1 s   (once per VM / per task)
@@ -16,20 +16,17 @@ lists, gsettings keys, sink volume, window list, task output dir, and a guest
 HTTPS fetch after 15 successive restores).  A restore provably rewinds a SOLVED
 task back to unsolved and a re-solve scores again.
 
-This module is a plain object a caller constructs.  It does not reach into
-another package's namespace or rewrite a third-party provider factory at import
-time, so a re-clone of the benchmark tree cannot silently remove it.
+This is a plain object a caller constructs.  It does not reach into another
+package's namespace or rewrite a third-party provider factory at import time.
 
-TWO IDEAS READ FROM trycua/cua AND REIMPLEMENTED (no trycua code imported):
+Two ideas were read from trycua/cua and reimplemented; no trycua code is
+imported:
 
-  * **CoW fork.**  ``qemu-img create -f qcow2 -b <base> -F qcow2 <child>`` gives
-    N isolated children off one warm base, for parallel rollouts, instead of
+  * CoW fork.  ``qemu-img create -f qcow2 -b <base> -F qcow2 <child>`` gives N
+    isolated children off one warm base, for parallel rollouts, instead of
     serializing every rollout on one ``loadvm``.
-  * **``-accel tcg`` fallback.**  A node without ``/dev/kvm`` is not a dead node.
-    It is a slow node, which is still useful for plumbing tests, and it is the
-    difference between "the CI job cannot run anywhere" and "the CI job is slow".
-
-Zero dependencies: HTTP readiness polling is ``urllib.request``.
+  * ``-accel tcg`` fallback.  A node without ``/dev/kvm`` is a slow node rather
+    than a dead one, which is still useful for plumbing tests.
 """
 
 from __future__ import annotations
@@ -255,15 +252,11 @@ class QemuRuntime:
             try:
                 return self._start_once()
             except BaseException as exc:
-                # EVERY unsuccessful exit tears the process down.  Only the
-                # retry path used to, so any other failure propagated with QEMU
-                # still running, still holding this block of host ports and its
-                # full -m memory, and with the QMP socket still on disk.  The
-                # reachable case is a boot TIMEOUT: `_wait_ready` raises
-                # TimeoutError, not QemuError, so it matched no handler here --
-                # which meant `with QemuRuntime(...) as vm:` leaked a whole VM
-                # whenever the guest agent did not come up, because __exit__
-                # never runs if __enter__ raised.
+                # EVERY unsuccessful exit must tear the process down, not just
+                # the retry path: a boot timeout raises TimeoutError rather than
+                # QemuError, and __exit__ never runs if __enter__ raised, so
+                # anything that escapes here leaks a whole VM -- its host ports,
+                # its full -m memory, and its QMP socket on disk.
                 retryable = (
                     isinstance(exc, QemuError)
                     and "died early" in str(exc)
