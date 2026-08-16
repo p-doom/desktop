@@ -34,10 +34,36 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Literal, Protocol, Self, TextIO, cast
+from typing import Any, Final, Literal, Protocol, Self, TextIO, cast
 
 SessionStatus = Literal["ready", "leased"]
 RetireReason = Literal["retired", "failed"]
+
+#: The status-file fields a capacity scheduler in another process reads (ours is
+#: ``desktop_fleet``).  Nothing type-checks that file across the boundary and the
+#: consumer reads it as ``.get(field, 0)``, so renaming one of these here can
+#: leave BOTH packages' suites green while routing runs on numbers that stopped
+#: meaning what they say -- measured: renaming ``updated_at`` keeps 969 and 103
+#: passing and makes every backend permanently stale.
+#: ``desktop_fleet/tests/test_pool_status_contract.py`` is what makes it loud.
+CONSUMED_STATUS_FIELDS: Final = (
+    # routed on
+    "ready",
+    "starting",
+    "leased",
+    # whether the file counts at all: a closed pool and a pool whose heartbeat
+    # stopped both still leave one on disk
+    "closed",
+    "updated_at",
+    # reported, not routed on
+    "total_started",
+    "total_failed",
+    "stale_leases_retired",
+    "retry_scheduled",
+    "consecutive_start_failures",
+    "startup_cooldown_remaining_s",
+    "last_error",
+)
 
 
 @dataclass(frozen=True)
@@ -848,7 +874,10 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
         _write_json_atomic(self.status_path, self._status_payload_locked())
 
     def _status_payload_locked(self) -> dict[str, Any]:
-        """Build the JSON-serializable status payload for this worker pool."""
+        """Build the JSON-serializable status payload for this worker pool.
+
+        Every name in ``CONSUMED_STATUS_FIELDS`` has a reader in another package.
+        """
         now = self._clock()
         sessions = [
             _session_payload(session, now=now)
