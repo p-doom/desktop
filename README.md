@@ -1,7 +1,7 @@
-# pixeldesk
+# desktop
 
-pixeldesk boots desktop VMs and executes mouse and keyboard operations on them.
-It applies `Operation`s — already resolved to absolute screen pixels — to a real
+This package boots desktop VMs and executes mouse and keyboard operations on
+them. It applies `Operation`s — already resolved to absolute screen pixels — to a real
 desktop, and it starts, resets, pools, and proves the state of the VMs those
 desktops run on.
 
@@ -19,9 +19,9 @@ and `apptainer`.
 ## Usage
 
 ```python
-from pixeldesk import DisplayGeometry, Operation
-from pixeldesk.execute import Engine, HttpGuiTransport
-from pixeldesk.vm import DesktopSession, QemuRuntime
+from desktop import DisplayGeometry, Operation
+from desktop.execute import Engine, HttpGuiTransport
+from desktop.vm import DesktopSession, QemuRuntime
 
 runtime = QemuRuntime(image=Path("/images/guest.qcow2"))
 with DesktopSession(runtime) as session:
@@ -39,7 +39,7 @@ with DesktopSession(runtime) as session:
 
 ## The codec contract
 
-`your_codec` satisfies `pixeldesk.codec_protocol.Codec` and lives in *your*
+`your_codec` satisfies `desktop.codec_protocol.Codec` and lives in *your*
 repository. That is the whole contract:
 
 ```python

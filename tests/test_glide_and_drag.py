@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from pixeldesk import ir
-from pixeldesk.execute.guest_program import (
+from desktop import ir
+from desktop.execute.guest_program import (
     ExecutionError,
     expected_atomic_input_state,
     lower_guest_operations,
@@ -86,7 +86,7 @@ HELD_STROKE = (ir.mouse_down("left"), ir.glide_to(1200, 700, 0.5), ir.mouse_up("
 
 def test_a_held_stroke_keeps_the_timed_move_inside_the_held_button():
     """In the generated SOURCE: press, then the timed move, then release."""
-    from pixeldesk.execute.guest_program import compile_atomic_guest_program
+    from desktop.execute.guest_program import compile_atomic_guest_program
 
     source, _ = compile_atomic_guest_program(
         HELD_STROKE, initial_buttons=set(), initial_keys=set()
@@ -367,7 +367,7 @@ def test_the_invariant_covers_every_kind_the_executor_lowers():
     ``coalesced_type`` is the one exclusion: it needs the fake GTK stack in the
     guest subprocess, so it has its own test below rather than a table entry.
     """
-    from pixeldesk.ir import CANONICAL_KINDS
+    from desktop.ir import CANONICAL_KINDS
 
     covered = {
         operation.kind

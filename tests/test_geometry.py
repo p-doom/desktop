@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from pixeldesk.geometry import (
+from desktop.geometry import (
     ANTHROPIC_MAX_LONG_EDGE,
     ANTHROPIC_MAX_TOTAL_PIXELS,
     DisplayGeometry,
@@ -32,7 +32,7 @@ FULL_HD = DisplayGeometry(desktop_width=1920, desktop_height=1080)
 
 
 def _geometry_source() -> str:
-    from pixeldesk import geometry
+    from desktop import geometry
 
     return Path(geometry.__file__).read_text()
 

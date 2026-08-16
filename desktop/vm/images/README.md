@@ -27,7 +27,7 @@ plumbing check, not a result.
 
 It is still worth having: it runs on any node, it starts in seconds rather than
 minutes, and it has `pyautogui` + `python-xlib` installed, so a guest program
-compiled by `pixeldesk/execute/guest_program.py` executes there. That makes the
+compiled by `desktop/execute/guest_program.py` executes there. That makes the
 executor testable on a node with no virtualization at all.
 
 ## Flagged, not faked

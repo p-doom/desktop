@@ -23,14 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from pixeldesk import ir
-from pixeldesk.execute import guest_program as GP
-from pixeldesk.execute.guest_program import ATOMIC_RESULT_PREFIX, compile_atomic_guest_program
-from pixeldesk.vm.session import GUEST_JSON_MARKER, GuestScript
+from desktop import ir
+from desktop.execute import guest_program as GP
+from desktop.execute.guest_program import ATOMIC_RESULT_PREFIX, compile_atomic_guest_program
+from desktop.vm.session import GUEST_JSON_MARKER, GuestScript
 from tests.support.guest_runner import run_guest_program
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PACKAGE_ROOT = REPO_ROOT / "pixeldesk"
+PACKAGE_ROOT = REPO_ROOT / "desktop"
 
 #: Every kind the executor claims to lower, with a representative payload.
 ALL_CANONICAL_OPERATIONS = (
@@ -115,7 +115,7 @@ def test_the_schema_key_the_guest_emits_is_the_key_the_host_checks():
     """``_de_schema`` is renamed payload state; a mismatch rejects every action."""
     run = run_guest_program((ir.move_to(1, 1),))
     assert "_de_schema" in run.payload
-    from pixeldesk.execute.transport import HttpGuiTransport
+    from desktop.execute.transport import HttpGuiTransport
 
     transport = HttpGuiTransport("http://127.0.0.1:1")
     result = transport._parse_atomic_payload(
@@ -128,8 +128,8 @@ def test_the_schema_key_the_guest_emits_is_the_key_the_host_checks():
 
 
 def test_a_wrongly_named_schema_key_is_rejected_rather_than_ignored():
-    from pixeldesk.execute.guest_program import ExecutionError
-    from pixeldesk.execute.transport import HttpGuiTransport
+    from desktop.execute.guest_program import ExecutionError
+    from desktop.execute.transport import HttpGuiTransport
 
     transport = HttpGuiTransport("http://127.0.0.1:1")
     stdout = ATOMIC_RESULT_PREFIX + json.dumps({"_r1a_schema": 1, "ok": True})
@@ -149,7 +149,7 @@ def test_the_guest_json_marker_round_trips_through_guest_script():
 
 
 def test_guest_script_refuses_a_marker_it_cannot_find_exactly_once():
-    from pixeldesk.vm.session import SessionError
+    from desktop.vm.session import SessionError
 
     script = GuestScript(client=None)  # type: ignore[arg-type]
     with pytest.raises(SessionError, match="0 result markers"):
@@ -235,7 +235,7 @@ def test_the_step_comment_marker_is_emitted_for_every_lowered_operation():
     semantic operation *n*.  Both streams are in the payload, so the mapping is
     recoverable -- but do not read a step number as a semantic index.
     """
-    from pixeldesk.execute.guest_program import lower_guest_operations
+    from desktop.execute.guest_program import lower_guest_operations
 
     program, _ = compile_atomic_guest_program(
         ALL_CANONICAL_OPERATIONS, initial_buttons=set(), initial_keys=set()
@@ -264,7 +264,7 @@ def test_a_truncated_operation_payload_is_refused(payload):
 
 def test_every_documented_environment_variable_is_read_somewhere():
     """A renamed env-var name that nothing reads is silently ignored config."""
-    from pixeldesk.vm.factory import ENVIRONMENT
+    from desktop.vm.factory import ENVIRONMENT
 
     sources = "\n".join(path.read_text() for path in PACKAGE_ROOT.rglob("*.py"))
     for name in ENVIRONMENT:
@@ -272,7 +272,7 @@ def test_every_documented_environment_variable_is_read_somewhere():
 
 
 def test_every_desktop_env_environment_variable_read_is_documented():
-    from pixeldesk.vm.factory import ENVIRONMENT
+    from desktop.vm.factory import ENVIRONMENT
 
     pattern = re.compile(r"environ\.get\(\s*\"(DESKTOP_ENV_[A-Z_]+)\"")
     used = set()

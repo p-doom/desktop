@@ -15,8 +15,8 @@ import pytest
 
 from typing import Any, Callable
 
-from pixeldesk import ir
-from pixeldesk.codec_protocol import (
+from desktop import ir
+from desktop.codec_protocol import (
     ActionSet,
     MultiActionError,
     ParsedCall,
@@ -25,7 +25,7 @@ from pixeldesk.codec_protocol import (
     parse_action_docstring,
     parse_calls,
 )
-from pixeldesk.geometry import DisplayGeometry, resolve_relative
+from desktop.geometry import DisplayGeometry, resolve_relative
 
 GEOMETRY = DisplayGeometry(desktop_width=1920, desktop_height=1080)
 
@@ -490,7 +490,7 @@ def test_the_served_tool_types_match_the_declared_annotations():
     keeps holding if the mapping is extended, and fails if the derivation stops
     consulting the annotation at all.
     """
-    from pixeldesk.codec_protocol import _TYPE_JSON, _resolved_signature
+    from desktop.codec_protocol import _TYPE_JSON, _resolved_signature
 
     for source in (POSTPONED_ACTION, EAGER_ACTION):
         action = _codec_with_postponed_annotations(source)
@@ -550,7 +550,7 @@ def test_a_codec_satisfies_the_runtime_checkable_protocol_structurally():
     no implementation can satisfy makes the gate read "not a codec" for every
     codec, which is worse than having no gate.
     """
-    from pixeldesk.codec_protocol import Codec
+    from desktop.codec_protocol import Codec
 
     class Minimal:
         name = "minimal"
@@ -573,7 +573,7 @@ def test_a_codec_satisfies_the_runtime_checkable_protocol_structurally():
 
 def test_the_protocol_declares_no_dispatch_member():
     """``handlers`` belongs to ``ActionSet``, not to the codec contract."""
-    from pixeldesk.codec_protocol import Codec
+    from desktop.codec_protocol import Codec
 
     assert "handlers" not in getattr(Codec, "__protocol_attrs__", set())
     assert "stop_sequences" in getattr(Codec, "__protocol_attrs__", set())
@@ -584,7 +584,7 @@ def test_the_module_contains_no_action_name_of_its_own():
     """A grammar in the protocol module would defeat the whole seam."""
     import inspect
 
-    from pixeldesk import codec_protocol
+    from desktop import codec_protocol
 
     source = inspect.getsource(codec_protocol)
     body = source.split('"""', 2)[-1]  # drop the module docstring

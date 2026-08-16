@@ -17,16 +17,16 @@ import inspect
 
 import pytest
 
-from pixeldesk import ir
-from pixeldesk.execute.engine import Engine, StepReceipt
-from pixeldesk.execute.guest_program import (
+from desktop import ir
+from desktop.execute.engine import Engine, StepReceipt
+from desktop.execute.guest_program import (
     DIRECT_XTEST_CLICK_BACKEND,
     PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
     AtomicExecutionResult,
     ExecutionError,
     InputAudit,
 )
-from pixeldesk.execute.transport import RecordingTransport
+from desktop.execute.transport import RecordingTransport
 
 
 def _result(**overrides) -> AtomicExecutionResult:
@@ -174,7 +174,7 @@ def test_a_propagated_typeerror_leaves_no_receipt_behind():
 
 def test_the_engine_never_wraps_execute_atomic_in_except_typeerror():
     """Structural guard on the mechanism, not just the behaviour."""
-    from pixeldesk.execute.engine import _require_click_backend_parameter
+    from desktop.execute.engine import _require_click_backend_parameter
 
     source = inspect.getsource(Engine._execute)
     assert "except" not in source

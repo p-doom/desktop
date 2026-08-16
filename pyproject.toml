@@ -1,10 +1,16 @@
 [project]
-# Do NOT rename this to `desktop-env` / `desktop_env`. That distribution AND
-# import name belong to xlang-ai/desktop_env (OSWorld), which callers import
-# alongside this package to score the benchmark -- and sys.path cannot override
-# an entry already in sys.modules, so two packages cannot share one import name
-# when a process needs both.
-name = "pixeldesk"
+# `desktop` must stay distinct from `desktop_env`. That distribution AND import
+# name belong to xlang-ai/desktop_env (OSWorld), which callers import alongside
+# this package to score the benchmark -- and sys.path cannot override an entry
+# already in sys.modules, so two packages cannot share one import name when a
+# process needs both.
+#
+# `desktop` is not unclaimed either: PyPI's `desktop` 0.4.2 ships an import
+# package of the same name. Nothing here is published and every consumer
+# resolves this tree by path, so a `pip install desktop` that silently installs
+# that one instead is the failure to expect -- reported as a missing submodule,
+# never as a conflict.
+name = "desktop"
 version = "0.1.0"
 description = "Apply absolute-pixel input operations to a real desktop VM, and reset it. Grammar-free, stdlib-only."
 requires-python = ">=3.12"
@@ -14,14 +20,14 @@ requires-python = ">=3.12"
 # incompatible dependency graphs (JAX, torch, CUDA, vLLM pins), and a VM layer
 # that pins broadly becomes a resolver conflict that looks like a training bug.
 # HTTP is therefore urllib.request, and screenshots cross every boundary in this
-# package as raw bytes. Pillow is used in one place, pixeldesk/vm/readiness.py.
+# package as raw bytes. Pillow is used in one place, desktop/vm/readiness.py.
 #
 # Two external BINARIES are also assumed, because they are not Python and cannot
 # be vendored: qemu-system-x86_64 and apptainer.
 dependencies = ["pillow>=10"]
 
 [project.optional-dependencies]
-# Test-only. Nothing here may be imported by pixeldesk/ itself.
+# Test-only. Nothing here may be imported by desktop/ itself.
 dev = ["pytest>=8"]
 
 [build-system]
@@ -29,10 +35,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["pixeldesk*"]
+# Not `desktop*`: this repository also holds the `desktop_fleet` package, which
+# is a separate distribution and must not be swept into this wheel.
+include = ["desktop", "desktop.*"]
 
 [tool.setuptools.package-data]
-"pixeldesk.vm.images" = ["*.def", "*.md"]
+"desktop.vm.images" = ["*.def", "*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

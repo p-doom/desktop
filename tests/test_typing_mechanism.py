@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import pytest
 
-from pixeldesk import ir
-from pixeldesk.execute.guest_program import (
+from desktop import ir
+from desktop.execute.guest_program import (
     GTK_CLIPBOARD_TYPING_MECHANISM,
     PYAUTOGUI_WRITE_TYPING_MECHANISM,
     coalesced_type_mechanism,

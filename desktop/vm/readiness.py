@@ -10,7 +10,7 @@ means not ready; either one alone is not enough, because a solid grey screen is
 bright but flat and a mostly-black desktop with a bright taskbar is dark but
 structured.
 
-This is the one place ``pixeldesk`` imports Pillow; screenshots cross every other
+This is the one place ``desktop`` imports Pillow; screenshots cross every other
 boundary as raw ``bytes``.
 
 The sampler must AVERAGE, not point-sample: ``thumbnail`` averages over a

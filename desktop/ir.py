@@ -50,7 +50,7 @@ class Operation:
         return cls(str(payload["kind"]), tuple(payload["args"]))
 
 
-# Argument shapes for the kinds ``pixeldesk.execute.guest_program`` lowers.  No
+# Argument shapes for the kinds ``desktop.execute.guest_program`` lowers.  No
 # relative member: resolution happens inside a codec's ``compile``.
 
 CANONICAL_KINDS: dict[str, str] = {

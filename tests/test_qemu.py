@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-import pixeldesk.vm.qemu as qemu_module
-from pixeldesk.vm.qemu import (
+import desktop.vm.qemu as qemu_module
+from desktop.vm.qemu import (
     BASE_CHECKPOINT,
     QemuError,
     QemuRuntime,
@@ -35,7 +35,7 @@ from pixeldesk.vm.qemu import (
     free_port,
     kvm_available,
 )
-from pixeldesk.vm.runtime import GuestPorts
+from desktop.vm.runtime import GuestPorts
 from tests.conftest import qemu_img_binary, qemu_system_binary
 
 STUB_QEMU_IMG = r"""#!/bin/bash
@@ -132,7 +132,7 @@ def test_falling_back_to_tcg_warns_that_it_invalidates_timings(
     base_image, monkeypatch, caplog
 ):
     monkeypatch.setattr(qemu_module, "kvm_available", lambda: False)
-    with caplog.at_level("WARNING", logger="pixeldesk.vm.qemu"):
+    with caplog.at_level("WARNING", logger="desktop.vm.qemu"):
         QemuRuntime(image=base_image)
     assert "not valid for timing" in caplog.text
 

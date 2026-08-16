@@ -9,7 +9,7 @@ The in-VM agent exposes a small Flask app.  Of it, exactly four endpoints matter
     GET  /accessibility   -> the platform accessibility tree (AT-SPI XML)
 
 There is no dispatch here and no key tables: dispatch belongs to a codec and an
-executor, and the key tables live in ``pixeldesk.execute.keymap``.  This is a
+executor, and the key tables live in ``desktop.execute.keymap``.  This is a
 transport.
 
 Screenshots are handed back as PNG bytes, never as decoded images -- only the
@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-_LOG = logging.getLogger("pixeldesk.vm.osworld_client")
+_LOG = logging.getLogger("desktop.vm.osworld_client")
 
 
 class GuestAgentError(RuntimeError):
@@ -132,7 +132,7 @@ class OSWorldClient:
         ``shell: false`` always.  The agent runs a subprocess and does not eval,
         so a caller that wants Python in the guest passes
         ``["python", "-c", <program>]`` -- which is what
-        ``pixeldesk.execute.guest_program`` compiles.
+        ``desktop.execute.guest_program`` compiles.
         """
         result = self._request_json(
             "POST", "/execute", payload={"command": list(argv), "shell": False},

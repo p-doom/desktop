@@ -4,7 +4,7 @@ From: ubuntu:22.04
 # The KVM tier's host-side container.
 #
 # This container does NOT contain a desktop.  It contains QEMU and the tools
-# `pixeldesk.vm.qemu` shells out to; the desktop lives inside the guest qcow2
+# `desktop.vm.qemu` shells out to; the desktop lives inside the guest qcow2
 # image that QEMU boots, and that image is an input, not a layer.  The guest
 # image is what determines benchmark parity -- its application versions, its
 # in-VM agent, its display geometry -- so it must be a pinned artifact that a

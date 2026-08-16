@@ -47,7 +47,7 @@ from typing import Any
 
 from .runtime import Checkpoint, GuestPorts, RuntimeState
 
-_LOG = logging.getLogger("pixeldesk.vm.qemu")
+_LOG = logging.getLogger("desktop.vm.qemu")
 
 # Guest-side ports the in-VM agent / debug interfaces listen on.
 GUEST_SERVER_PORT = 5000

@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import pytest
 
-from pixeldesk import ir
-from pixeldesk.execute.guest_program import compile_atomic_guest_program
-from pixeldesk.ir import Operation, scroll_deltas
+from desktop import ir
+from desktop.execute.guest_program import compile_atomic_guest_program
+from desktop.ir import Operation, scroll_deltas
 from tests.support.guest_runner import run_guest_program
 
 
@@ -134,8 +134,8 @@ def test_recording_transport_scroll_total_counts_vertical_ticks(recording):
 
 def test_audit_absorption_reads_the_vertical_axis_of_a_scroll_trace():
     """``HttpGuiTransport._absorb`` reads index 1, i.e. dy, of a two-axis trace."""
-    from pixeldesk.execute.guest_program import AtomicExecutionResult
-    from pixeldesk.execute.transport import HttpGuiTransport
+    from desktop.execute.guest_program import AtomicExecutionResult
+    from desktop.execute.transport import HttpGuiTransport
 
     transport = HttpGuiTransport("http://127.0.0.1:1")
     result = AtomicExecutionResult(

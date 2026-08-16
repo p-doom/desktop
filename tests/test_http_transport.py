@@ -23,15 +23,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from pixeldesk import ir
-from pixeldesk.execute.guest_program import (
+from desktop import ir
+from desktop.execute.guest_program import (
     ATOMIC_RESULT_PREFIX,
     ATOMIC_SCHEMA_VERSION,
     DIRECT_XTEST_CLICK_BACKEND,
     PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
     ExecutionError,
 )
-from pixeldesk.execute.transport import HttpGuiTransport
+from desktop.execute.transport import HttpGuiTransport
 from tests.support.guest_runner import run_guest_program
 
 STATE: dict = {}
@@ -224,7 +224,7 @@ def test_mouse_down_and_up_maintain_the_held_set(transport):
 
 def test_an_unknown_button_never_reaches_the_guest(transport):
     STATE["routes"]["/execute"] = ok_execute()
-    from pixeldesk.execute.keymap import KeymapError
+    from desktop.execute.keymap import KeymapError
 
     with pytest.raises(KeymapError):
         transport.mouse_down("nonsense")

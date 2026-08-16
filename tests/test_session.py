@@ -21,8 +21,8 @@ import os
 
 import pytest
 
-from pixeldesk.vm.runtime import Checkpoint, GuestPorts, RuntimeState
-from pixeldesk.vm.session import (
+from desktop.vm.runtime import Checkpoint, GuestPorts, RuntimeState
+from desktop.vm.session import (
     DesktopSession,
     GuestScript,
     ProcessGroupReaper,

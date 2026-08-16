@@ -21,8 +21,8 @@ import random
 import pytest
 from PIL import Image
 
-from pixeldesk.vm import readiness as R
-from pixeldesk.vm.readiness import (
+from desktop.vm import readiness as R
+from desktop.vm.readiness import (
     DEFAULT_THUMBNAIL_SIZE,
     ScreenshotStatus,
     desktop_screenshot_ready,
