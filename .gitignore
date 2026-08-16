@@ -5,6 +5,7 @@ build/
 dist/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .venv/
 # Built images and VM artifacts are inputs or outputs, never sources.
 *.sif
