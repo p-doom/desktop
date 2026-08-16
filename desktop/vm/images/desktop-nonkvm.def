@@ -54,7 +54,7 @@ From: ubuntu:22.04
 
     # UI stack.  xdotool is the input path for this tier: there is no in-guest
     # HTTP agent here, so a caller drives it over `apptainer exec` rather than
-    # over the transport in desktop_env/execute/transport.py.
+    # over the transport in desktop/execute/transport.py.
     apt-get -y install --no-install-recommends \
         xvfb \
         xterm \
@@ -97,7 +97,7 @@ From: ubuntu:22.04
 
     # pyautogui + python-xlib give this tier the same input primitive names the
     # KVM guest has, so a guest program compiled by
-    # desktop_env/execute/guest_program.py runs here too.  That is the only reason
+    # desktop/execute/guest_program.py runs here too.  That is the only reason
     # this tier is useful for testing the executor at all.
     python3 -m pip install --no-cache-dir pyautogui==0.9.54 python-xlib==0.33 pillow
 
