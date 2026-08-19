@@ -36,10 +36,10 @@ from desktop.vm.factory import (
     qemu_session_factory,
 )
 from desktop.vm.pool import (
+    PORT_BASE,
     PortLease,
     WorkerPorts,
     allocate_worker_ports,
-    get_port_base,
     ports_for_worker,
 )
 from desktop.vm.qemu import QemuError, QemuRuntime
@@ -63,13 +63,9 @@ def port_base(monkeypatch):
     inside it was intermittently "busy" because unrelated outbound connections on
     a shared login node land there, which showed up as random skips.
     """
-    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-    monkeypatch.delenv("JOB_ID", raising=False)
-
     def window_is_free(start: int) -> bool:
         for port in range(start, start + 80):
             probe = socket.socket()
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 probe.bind(("", port))
             except OSError:
@@ -86,7 +82,6 @@ def port_base(monkeypatch):
         if base + 80 > 65535:
             break
         if window_is_free(base):
-            monkeypatch.setenv("DESKTOP_ENV_PORT_BASE", str(base))
             return base
     pytest.skip("no free 80-port window above the ephemeral range")
 
@@ -168,37 +163,23 @@ def test_the_runtime_forwards_exactly_the_pinned_ports(image, tmp_path, monkeypa
     assert state.base_url == "http://127.0.0.1:41000"
 
 
-def test_a_runtime_with_pinned_ports_never_calls_free_port(image, monkeypatch):
-    import desktop.vm.qemu as qemu_module
-
-    def explode():
-        raise AssertionError("free_port must not be reached when ports are pinned")
-
-    monkeypatch.setattr(qemu_module, "free_port", explode)
+def test_a_runtime_without_a_leased_block_refuses_to_boot(image, monkeypatch):
+    """The one allocator is `allocate_worker_ports`, so there is nowhere else for
+    ports to come from. A self-allocating fallback would be a second allocator
+    that cannot see the first's locks."""
     monkeypatch.setattr(QemuRuntime, "_wait_ready", lambda *a, **k: None)
-
-    class FakeProcess:
-        pid = 1
-        returncode = None
-
-        def poll(self):
-            return None
-
-    monkeypatch.setattr(qemu_module.subprocess, "Popen", lambda *a, **k: FakeProcess())
-    runtime = QemuRuntime(
-        image=image, accelerator="tcg", ports=GuestPorts(server=41010), qmp_dir=Path("/tmp")
-    )
-    assert runtime.start().ports.server == 41010
-
-
-def test_an_unpinned_runtime_does_allocate_its_own_ports(image):
     runtime = QemuRuntime(image=image, accelerator="tcg")
-    assert runtime.pinned_ports is None
+    with pytest.raises(QemuError, match="allocate_worker_ports"):
+        runtime.start()
 
 
 def test_two_leases_receive_disjoint_port_blocks(port_base, tmp_path):
-    first = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
-    second = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
+    first = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work",
+        log_dir=tmp_path / "logs", base=port_base,
+    )
+    second = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work",
+        log_dir=tmp_path / "logs", base=port_base,
+    )
     try:
         assert first.slot != second.slot
         first_ports = set(first.ports.as_dict().values())
@@ -211,7 +192,9 @@ def test_two_leases_receive_disjoint_port_blocks(port_base, tmp_path):
 
 def test_many_concurrent_leases_are_all_pairwise_disjoint(port_base, tmp_path):
     leases = [
-        allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
+        allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work",
+        log_dir=tmp_path / "logs", base=port_base,
+    )
         for _ in range(6)
     ]
     try:
@@ -227,10 +210,14 @@ def test_many_concurrent_leases_are_all_pairwise_disjoint(port_base, tmp_path):
 
 
 def test_a_released_slot_is_handed_out_again(port_base, tmp_path):
-    first = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
+    first = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work",
+        log_dir=tmp_path / "logs", base=port_base,
+    )
     slot, ports = first.slot, first.ports
     first.release()
-    second = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
+    second = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work",
+        log_dir=tmp_path / "logs", base=port_base,
+    )
     try:
         assert second.slot == slot and second.ports == ports
     finally:
@@ -253,7 +240,7 @@ def test_a_lease_held_by_another_PROCESS_is_not_handed_out_again(port_base, tmp_
                 "from desktop.vm.pool import allocate_worker_ports\n"
                 f"lease = allocate_worker_ports(\n"
                 f"    lock_dir={str(locks)!r}, work_dir={str(work)!r},\n"
-                f"    log_dir={str(logs)!r}\n"
+                f"    log_dir={str(logs)!r}, base={port_base}\n"
                 f")\n"
                 "print(lease.ports.server, flush=True)\n"
                 "time.sleep(30)\n"
@@ -261,11 +248,13 @@ def test_a_lease_held_by_another_PROCESS_is_not_handed_out_again(port_base, tmp_
         ],
         stdout=subprocess.PIPE,
         text=True,
-        env={**os.environ, "DESKTOP_ENV_PORT_BASE": str(port_base)},
+        env=os.environ.copy(),
     )
     try:
         held_server_port = int(holder.stdout.readline().strip())
-        mine = allocate_worker_ports(lock_dir=locks, work_dir=work, log_dir=logs)
+        mine = allocate_worker_ports(
+            lock_dir=locks, work_dir=work, log_dir=logs, base=port_base
+        )
         try:
             assert mine.ports.server != held_server_port
             assert held_server_port not in set(mine.ports.as_dict().values())
@@ -284,7 +273,9 @@ def test_a_port_already_bound_by_something_else_is_skipped(port_base, tmp_path):
     blocker.bind(("", port_base + 2))  # the vnc port of slot 0
     blocker.listen(1)
     try:
-        lease = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
+        lease = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work",
+        log_dir=tmp_path / "logs", base=port_base,
+    )
         try:
             assert lease.slot != 0
             assert port_base + 2 not in set(lease.ports.as_dict().values())
@@ -307,28 +298,15 @@ def test_a_block_beyond_the_tcp_range_is_refused():
         ports_for_worker(65530, 1)
 
 
-def test_the_port_base_is_per_job_so_two_jobs_on_one_node_do_not_collide():
-    assert get_port_base("12345") != get_port_base("12346")
-    assert get_port_base(None) == 20000
-    assert get_port_base("not-a-number") == 20000
-    assert get_port_base(None, configured_base="30000") == 30000
-
-
-@pytest.mark.parametrize("bad", ["0", "1023", "70000"])
-def test_an_out_of_range_configured_base_is_refused(bad):
-    with pytest.raises(ValueError, match="between 1024 and 65535"):
-        get_port_base(None, configured_base=bad)
-
-
-def test_a_non_numeric_configured_base_is_refused():
-    with pytest.raises(ValueError, match="must be an integer"):
-        get_port_base(None, configured_base="abc")
-
-
-def test_a_misaligned_configured_base_is_refused(tmp_path, monkeypatch):
-    monkeypatch.setenv("DESKTOP_ENV_PORT_BASE", "41005")
-    with pytest.raises(ValueError, match="aligned to port stride"):
-        allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
+def test_one_span_for_the_node_rather_than_one_derived_per_job():
+    """A base of `20000 + int(job_id) % 10000` collided EXACTLY for two jobs whose
+    ids differ by a multiple of 10000, and no arithmetic on a monotonically
+    increasing id avoids that. The span is shared and the lock arbitrates it."""
+    assert PORT_BASE == 20000
+    highest = ports_for_worker(PORT_BASE, 511)
+    assert max(highest.as_dict().values()) < 32768, (
+        "the span must stay clear of ip_local_port_range (32768-60999 here)"
+    )
 
 
 def test_exhausting_every_slot_raises_rather_than_reusing_one(port_base, tmp_path):
@@ -337,6 +315,7 @@ def test_exhausting_every_slot_raises_rather_than_reusing_one(port_base, tmp_pat
             lock_dir=tmp_path / "locks",
             work_dir=tmp_path / "work",
             log_dir=tmp_path / "logs",
+            base=port_base,
             max_slots=2
         )
         for _ in range(2)
@@ -347,6 +326,7 @@ def test_exhausting_every_slot_raises_rather_than_reusing_one(port_base, tmp_pat
                 lock_dir=tmp_path / "locks",
             work_dir=tmp_path / "work",
             log_dir=tmp_path / "logs",
+            base=port_base,
             max_slots=2
             )
     finally:
@@ -354,46 +334,26 @@ def test_exhausting_every_slot_raises_rather_than_reusing_one(port_base, tmp_pat
             lease.release()
 
 
-def test_boot_retry_is_pinned_to_one_attempt_when_ports_are_pinned(image, monkeypatch):
-    """Retrying the same four ports would hide a real conflict behind a timeout."""
-    attempts = []
+def test_a_failed_boot_is_not_retried_and_tears_the_process_down(image, monkeypatch):
+    """Retrying the same four leased ports would hide a real conflict behind a
+    timeout, and every unsuccessful exit has to tear the VM down: a boot timeout
+    raises TimeoutError, and `__exit__` never runs if `__enter__` raised."""
+    attempts: list[int] = []
+    torn_down: list[int] = []
 
     def failing_start(self):
         attempts.append(1)
         raise QemuError("qemu died early (rc=1)")
 
     monkeypatch.setattr(QemuRuntime, "_start_once", failing_start)
+    monkeypatch.setattr(
+        QemuRuntime, "_teardown_process", lambda self: torn_down.append(1)
+    )
     runtime = QemuRuntime(image=image, accelerator="tcg", ports=GuestPorts(server=41020))
     with pytest.raises(QemuError):
         runtime.start()
-    assert len(attempts) == 1
-
-
-def test_an_unpinned_runtime_still_retries_the_lost_bind_race(image, monkeypatch):
-    attempts = []
-
-    def failing_start(self):
-        attempts.append(1)
-        raise QemuError("qemu died early (rc=1)")
-
-    monkeypatch.setattr(QemuRuntime, "_start_once", failing_start)
-    monkeypatch.setattr("desktop.vm.qemu.time.sleep", lambda seconds: None)
-    with pytest.raises(QemuError):
-        QemuRuntime(image=image, accelerator="tcg").start()
-    assert len(attempts) == 3
-
-
-def test_a_non_race_failure_is_not_retried_even_unpinned(image, monkeypatch):
-    attempts = []
-
-    def failing_start(self):
-        attempts.append(1)
-        raise QemuError("something else entirely")
-
-    monkeypatch.setattr(QemuRuntime, "_start_once", failing_start)
-    with pytest.raises(QemuError, match="something else"):
-        QemuRuntime(image=image, accelerator="tcg").start()
-    assert len(attempts) == 1
+    assert attempts == [1]
+    assert torn_down == [1]
 
 
 def test_the_pooled_factory_defaults_require_single_task_to_false():
@@ -421,7 +381,9 @@ def test_the_pooled_factory_passes_the_flag_through(port_base, tmp_path, image, 
         "build_desktop_session",
         lambda **kwargs: seen.update(kwargs) or type("S", (), {"start": lambda s: None})(),
     )
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
+    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+        base=port_base,
+    )
     try:
         qemu_session_factory(image=image)(lease)
         assert seen["require_single_task"] is False
@@ -547,7 +509,10 @@ def test_the_lease_workdir_becomes_the_session_scratch_root(
         lambda **kwargs: seen.update(kwargs) or type("S", (), {"start": lambda s: None})(),
     )
     lease = allocate_worker_ports(
-        lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g"
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
+        base=port_base,
     )
     try:
         qemu_session_factory(image=image)(lease)
@@ -564,7 +529,9 @@ def test_the_lease_workdir_becomes_the_session_scratch_root(
 def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
     from desktop.vm.pool import DesktopPoolSession, _close_session_resources
 
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
+    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+        base=port_base,
+    )
     closed = []
     session = DesktopPoolSession(
         session_id="s",
@@ -579,7 +546,9 @@ def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
     assert closed == [1]
     assert lease._released is True
     # ... and the slot is immediately reusable.
-    again = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
+    again = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+        base=port_base,
+    )
     try:
         assert again.slot == lease.slot
     finally:
@@ -587,14 +556,18 @@ def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
 
 
 def test_a_lease_release_is_idempotent(port_base, tmp_path):
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
+    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+        base=port_base,
+    )
     lease.release()
     lease.release()
     assert lease._released is True
 
 
 def test_a_lease_is_a_context_manager(port_base, tmp_path):
-    with allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g") as lease:
+    with allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+        base=port_base,
+    ) as lease:
         assert isinstance(lease, PortLease)
     assert lease._released is True
 
@@ -621,7 +594,10 @@ def test_a_released_lease_removes_its_own_working_directory(port_base, tmp_path)
     """``runtime_dir`` used to accumulate one ``w<pid>_<slot>`` directory per
     process forever, on a shared filesystem."""
     lease = allocate_worker_ports(
-        lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g"
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
+        base=port_base,
     )
     workdir, logdir = lease.workdir, lease.logdir
     assert workdir.is_dir() and logdir.is_dir()
@@ -634,7 +610,9 @@ def test_a_released_lease_removes_its_own_working_directory(port_base, tmp_path)
 def test_a_lease_whose_scratch_is_not_empty_is_left_alone(port_base, tmp_path):
     """``rmdir``, not ``rmtree``: a session that failed to clean up its own scratch
     must leave visible evidence rather than have it silently deleted."""
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
+    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+        base=port_base,
+    )
     leftover = lease.workdir / "desktop-env-something" / "evidence.txt"
     leftover.parent.mkdir(parents=True)
     leftover.write_text("a session did not clean up")
@@ -656,7 +634,10 @@ def test_a_pooled_session_leaves_its_scratch_empty_for_the_lease_to_remove(
     from desktop.vm.session import DesktopSession
 
     lease = allocate_worker_ports(
-        lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g"
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
+        base=port_base,
     )
     built: list[DesktopSession] = []
 
@@ -739,7 +720,6 @@ def test_a_zero_smp_is_refused(image):
 
 
 def test_every_documented_variable_has_a_description():
-    assert "DESKTOP_ENV_PORT_BASE" in ENVIRONMENT
     for name, description in ENVIRONMENT.items():
         assert name.startswith("DESKTOP_ENV_") and description.strip()
 

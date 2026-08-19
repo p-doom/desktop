@@ -33,7 +33,6 @@ from desktop.vm.qemu import (
     QemuError,
     QemuRuntime,
     QmpClient,
-    free_port,
     kvm_available,
 )
 from desktop.vm.runtime import GuestPorts
@@ -109,13 +108,6 @@ def _free_guest_port_block(count: int = 4) -> GuestPorts:
     pytest.skip("no free 4-port block in 43000..44000")
 
 
-def test_free_port_never_hands_out_the_same_port_twice_in_a_process():
-    ports = {free_port() for _ in range(40)}
-    assert len(ports) == 40
-
-
-def test_free_ports_are_in_the_ephemeral_range():
-    assert 1024 < free_port() <= 65535
 
 
 def test_kvm_is_chosen_when_the_node_has_it(base_image, monkeypatch):

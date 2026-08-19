@@ -24,10 +24,9 @@ import sys
 import tempfile
 import time
 import uuid
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator
+from typing import Any
 
 from ..execute.transport import HttpGuiTransport
 from .osworld_client import OSWorldClient
@@ -89,24 +88,6 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-@contextmanager
-def node_port_allocation_lock() -> Iterator[None]:
-    """Serialize ``bind(0)`` -> QEMU handoff across cooperating processes.
-
-    The runtime retries a lost bind race on its own, but serializing allocation
-    through the point where QEMU has actually bound closes the race between all
-    jobs sharing a node instead of merely surviving it.
-    """
-    path = Path(f"/tmp/desktop-env-port-allocation-{os.getuid()}.lock")
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
 
 
 class GuestScript:
@@ -314,8 +295,7 @@ class DesktopSession:
             return self._require_transport()
         try:
             self._prepare_isolation()
-            with node_port_allocation_lock():
-                state = self.runtime.start()
+            state = self.runtime.start()
             self.client = OSWorldClient(state.base_url, timeout_s=self.transport_timeout_s)
             self.transport = HttpGuiTransport(
                 state.base_url, timeout_s=self.transport_timeout_s
@@ -612,7 +592,6 @@ __all__ = [
     "ResetReceipt",
     "SessionError",
     "canonical_json",
-    "node_port_allocation_lock",
     "sha256_file",
     "task_unique_session_id",
     "write_json_atomic",

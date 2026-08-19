@@ -12,11 +12,18 @@ and reaps leases whose holder died without releasing.  The status file makes all
 of that inspectable from another process, which is how a multi-node run is
 debugged.
 
-The port allocator is vendored here rather than imported, and its shape matters:
-a *file-locked slot*, not ``bind(0)``.  ``bind(0)`` hands out a port that is then
-closed before QEMU binds it, so two simultaneous starts can be handed the same
-one; an ``flock`` on a slot file is held for the lifetime of the lease, and the
-allocator additionally probes each port in the block before accepting the slot.
+This module owns the ONE host-port allocator: ``QemuRuntime`` refuses to boot
+without a block from it.  Its shape matters -- a *file-locked slot*, not
+``bind(0)``.  ``bind(0)`` hands out a port that is then closed before QEMU binds
+it, so two simultaneous starts can be handed the same one; an ``flock`` on a slot
+file is held for the lifetime of the lease, spanning the probe and QEMU's own
+bind, and the allocator additionally probes every port in the block before
+accepting the slot.
+
+Two properties are what make it exclusive, and both were once wrong: the lock
+namespace has to be node-local and shared by every job on the node
+(``NODE_PORT_LOCK_DIR``), and the span has to be the same for everyone
+(``PORT_BASE``) rather than derived per job.
 """
 
 from __future__ import annotations
@@ -138,6 +145,28 @@ class PortLease:
         self.release()
 
 
+#: The one host-port span for desktops on a node.  512 slots at stride 10 reach
+#: 25119, which stays clear of this cluster's ``ip_local_port_range``
+#: (32768-60999); anything overlapping that gets taken from under us by an
+#: outgoing connection's ephemeral port.
+PORT_BASE: Final = 20000
+
+#: Where the port locks live, and it must be node-local AND shared by every job
+#: on the node -- ports are a node resource and partition ``standard`` is
+#: ``Exclusive=NO``, so two jobs really do share one.  Measured on this cluster:
+#: ``job_container/tmpfs`` with ``TmpFS=/tmp`` names /tmp as the BACKING store and
+#: bind-mounts per-job private directories over ``/var/tmp`` and ``/dev/shm``, so
+#: /tmp itself is the node's real filesystem and is visible across jobs, while
+#: ``$TMPDIR`` (=/var/tmp) and /dev/shm are job-private and would scope this lock
+#: to one job, protecting nothing.
+NODE_PORT_LOCK_DIR: Final = "/tmp/desktop-port-locks"
+
+
+def node_port_lock_dir() -> Path:
+    """Per-uid, so one user's locks are not another's to take or to break."""
+    return Path(f"{NODE_PORT_LOCK_DIR}-{os.getuid()}")
+
+
 def ports_for_worker(base: int, worker_id: int, stride: int = 10) -> WorkerPorts:
     start = base + worker_id * stride
     ports = WorkerPorts(
@@ -153,32 +182,21 @@ def ports_for_worker(base: int, worker_id: int, stride: int = 10) -> WorkerPorts
 
 
 def assert_ports_available(ports: WorkerPorts) -> None:
+    """Probe a block, with NO ``SO_REUSEADDR``.
+
+    ``SO_REUSEADDR`` lets two sockets that are bound but not listening hold the
+    same address, which is exactly the shape of two allocators probing at once:
+    measured on this cluster, both binds succeed with it set and the second is
+    refused with EADDRINUSE without it.  A live listener is refused either way,
+    so setting it bought nothing and cost the only mutual exclusion the probe
+    could offer against a port user that does not take our lock.
+    """
     for port in (ports.server, ports.chromium, ports.vnc, ports.vlc):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.bind(("", port))
             except OSError as exc:
                 raise RuntimeError(f"port {port} is already in use") from exc
-
-
-def get_port_base(job_id: str | None, *, configured_base: str | None = None) -> int:
-    """Pick a per-job base so two jobs on one node do not collide."""
-    if configured_base is not None:
-        try:
-            base = int(configured_base)
-        except ValueError as exc:
-            raise ValueError(
-                f"DESKTOP_ENV_PORT_BASE must be an integer, got {configured_base!r}"
-            ) from exc
-        if base < 1024 or base > 65535:
-            raise ValueError(
-                f"DESKTOP_ENV_PORT_BASE must be between 1024 and 65535, got {base}"
-            )
-        return base
-    if job_id and job_id.isdigit():
-        return 20000 + int(job_id) % 10000
-    return 20000
 
 
 def allocate_worker_ports(
@@ -186,19 +204,19 @@ def allocate_worker_ports(
     lock_dir: str | Path,
     log_dir: str | Path,
     work_dir: str | Path | None = None,
+    base: int = PORT_BASE,
     stride: int = 10,
     max_slots: int = 512,
 ) -> PortLease:
-    """Reserve a per-session port block behind an advisory file lock."""
-    configured_base = os.environ.get("DESKTOP_ENV_PORT_BASE")
-    base = get_port_base(
-        os.environ.get("SLURM_JOB_ID", os.environ.get("JOB_ID")),
-        configured_base=configured_base,
-    )
-    if configured_base is not None and base % stride:
-        raise ValueError(
-            f"DESKTOP_ENV_PORT_BASE {base} must be aligned to port stride {stride}"
-        )
+    """Reserve a port block behind an advisory file lock held for its lifetime.
+
+    One span for the whole node, claimed by lock and confirmed by probe.  There
+    is deliberately no per-job base: a base derived from the job id collided
+    exactly for two jobs whose ids differ by a multiple of the modulus, and no
+    arithmetic on a monotonically increasing id can avoid that.  ``lock_dir``
+    is what makes this safe, and it has to be shared by every job on the node --
+    see ``NODE_PORT_LOCK_DIR``.
+    """
     root = Path(lock_dir)
     work_root = Path(work_dir) if work_dir is not None else root
     log_root = Path(log_dir)
@@ -396,15 +414,25 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
             if config.status_dir is not None
             else self.root_dir / "status"
         )
+        # NOT under root_dir: that is per-run and on shared storage, so two runs
+        # -- or two jobs, or the same job twice -- shared no lock namespace at all
+        # and handed out the same ports while each held a lock the other could
+        # not see.
         self.port_lock_dir = (
             Path(config.port_lock_dir)
             if config.port_lock_dir is not None
-            else self.root_dir / "port_locks"
+            else node_port_lock_dir()
         )
+        # $TMPDIR, not root_dir: a lease's workdir becomes its session's scratch
+        # root and its TMPDIR, so QEMU's ~2.7 GB unlinked overlay lands here.
+        # Under root_dir that put every VM's overlay on shared /fast. $TMPDIR on
+        # this cluster is the job's private bind-mounted /var/tmp, which is
+        # node-local and which Slurm deletes when the job ends -- so this is also
+        # the only reason nothing needs a prepare-wipe or a shutdown-wipe.
         self.runtime_dir = (
             Path(config.runtime_dir)
             if config.runtime_dir is not None
-            else self.root_dir / "runtime"
+            else Path(os.environ.get("TMPDIR", "/tmp")) / f"desktop-pool-{os.getpid()}"
         )
         self.log_dir = self.root_dir / "logs"
         self.log_write_dir = (

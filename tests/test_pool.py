@@ -13,6 +13,7 @@ condition with a deadline rather than sleeping a guessed interval.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -531,6 +532,53 @@ def test_the_status_file_is_written_and_is_valid_json(pool_factory):
     assert payload["pid"] > 0
     assert payload["closed"] is False
     assert payload["worker_name"] == pool.status_path.stem
+
+
+def _unstarted_pool(root_dir: Path) -> DesktopSessionPool:
+    return DesktopSessionPool(
+        config=DesktopPoolConfig(),
+        root_dir=root_dir,
+        session_factory=lambda lease: FakeSession(lease),
+    )
+
+
+def test_the_port_lock_namespace_is_node_wide_and_not_per_run(tmp_path):
+    """Two runs on one node have to contend for the same slots.
+
+    Under ``root_dir/"port_locks"`` each run had its own namespace on shared
+    storage, so two runs -- or two jobs, or one job twice -- each took slot 0 and
+    handed out the same four ports, each holding a lock the other could not see.
+
+    It equally must not be ``$TMPDIR``: measured on this cluster,
+    ``job_container/tmpfs`` bind-mounts a PRIVATE ``/var/tmp`` (and ``/dev/shm``)
+    per job while ``/tmp`` is the node's real filesystem, visible across jobs. A
+    lock under ``$TMPDIR`` would be job-private and would protect nothing, which
+    is the whole failure this default exists to avoid.
+    """
+    first = _unstarted_pool(tmp_path / "run-a")
+    second = _unstarted_pool(tmp_path / "run-b")
+
+    assert first.port_lock_dir == second.port_lock_dir
+    assert not first.port_lock_dir.is_relative_to(tmp_path)
+    assert first.port_lock_dir.is_relative_to("/tmp")
+    assert not first.port_lock_dir.is_relative_to("/var/tmp")
+
+
+def test_the_runtime_dir_is_node_local_rather_than_on_the_shared_run_root(
+    tmp_path, monkeypatch
+):
+    """A lease's workdir becomes its session's TMPDIR, so QEMU's ~2.7 GB unlinked
+    overlay lands in it. Defaulting under ``root_dir`` put every VM's overlay on
+    shared /fast. ``$TMPDIR`` is the job's private, node-local, Slurm-deleted
+    directory, which is also why no prepare-wipe or shutdown-wipe is needed."""
+    monkeypatch.setenv("TMPDIR", "/var/tmp")
+
+    pool = _unstarted_pool(tmp_path / "run-a")
+
+    assert not pool.runtime_dir.is_relative_to(tmp_path)
+    assert pool.runtime_dir.is_relative_to("/var/tmp")
+    # still per-process, so two pools in one job do not share one scratch root
+    assert str(os.getpid()) in pool.runtime_dir.name
 
 
 def test_the_status_file_describes_each_session_and_its_ports(pool_factory):

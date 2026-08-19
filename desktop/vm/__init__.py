@@ -21,7 +21,7 @@ from .pool import (
     WorkerPorts,
     allocate_worker_ports,
 )
-from .qemu import QemuError, QemuRuntime, QmpClient, free_port, kvm_available
+from .qemu import QemuError, QemuRuntime, QmpClient, kvm_available
 from .readiness import (
     ScreenshotStatus,
     desktop_screenshot_ready,
@@ -88,7 +88,6 @@ __all__ = [
     "build_desktop_session",
     "build_qemu_runtime",
     "desktop_screenshot_ready",
-    "free_port",
     "kvm_available",
     "png_luma_samples",
     "qemu_session_factory",

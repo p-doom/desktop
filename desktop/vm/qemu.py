@@ -37,7 +37,6 @@ import os
 import shutil
 import socket
 import subprocess
-import threading
 import time
 import urllib.error
 import urllib.request
@@ -57,30 +56,9 @@ GUEST_VLC_PORT = 8080
 
 BASE_CHECKPOINT = "desktop_env_base"
 
-_PORT_LOCK = threading.Lock()
-_HANDED_OUT: set[int] = set()
-
 
 class QemuError(RuntimeError):
     """QEMU could not be started, snapshotted, forked, or reached."""
-
-
-def free_port() -> int:
-    """An ephemeral port not already handed out inside this process.
-
-    Cross-process races are still possible (the socket must be closed before QEMU
-    can bind it); ``start`` retries with fresh ports when QEMU loses one.
-    """
-    with _PORT_LOCK:
-        for _ in range(50):
-            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
-            probe.close()
-            if port not in _HANDED_OUT:
-                _HANDED_OUT.add(port)
-                return port
-        raise QemuError("could not find a free host port")
 
 
 class QmpClient:
@@ -186,12 +164,11 @@ class QemuRuntime:
         self.base_checkpoint = base_checkpoint
         self.runtime_id = runtime_id or f"{os.getpid()}-{uuid.uuid4().hex[:10]}"
         self.owns_image = bool(owns_image)
-        # Caller-pinned ports. Set this when something ELSE owns port allocation
-        # -- notably DesktopSessionPool, whose PortLease holds an flock on a port
-        # block for the lease's lifetime. Leaving it None makes this runtime
-        # allocate its own with bind(0)+close, which would make that lease
-        # decorative: the lock would be held on ports nothing is listening on
-        # while QEMU bound four unrelated ones.
+        # Required to boot. There is deliberately no self-allocating fallback:
+        # ``pool.allocate_worker_ports`` is the one allocator, and its flock is
+        # held from before the probe until after QEMU has bound. A bind(0)+close
+        # of our own would be a second allocator that cannot see the first, and
+        # would hand out a port between that probe and that bind.
         self.pinned_ports = ports
         self.accelerator = accelerator or self._pick_accelerator()
         self.timings: list[tuple[str, float]] = []
@@ -232,59 +209,34 @@ class QemuRuntime:
         self.timings.append((label, seconds))
         _LOG.info("[qemu] %-28s = %6.2fs", label, seconds)
 
-    def start(self, *, attempts: int = 3) -> RuntimeState:
-        """Boot the VM, retrying on a lost host-port race.
+    def start(self) -> RuntimeState:
+        """Boot the VM.
 
-        Ports come from ``bind(0)`` + ``close``, so N VMs booting at the same
-        moment can be handed the same port and the loser's QEMU dies immediately
-        with "Could not set up host forwarding". Retrying with fresh ports makes
-        multi-VM-per-node startup reliable.
+        There is no retry: the ports are leased, so a collision means something
+        else really holds one, and re-attempting the same four would fail again
+        more slowly and hide a real conflict behind a timeout.
         """
         if not self.image.is_file():
             raise QemuError(f"VM image missing: {self.image}")
-        # Retrying exists only to survive a lost bind(0) race. With pinned ports
-        # there is no race to lose: a collision means something else holds the
-        # port, and retrying the same four ports would just fail again more
-        # slowly, hiding a real conflict behind a timeout.
-        attempts = 1 if self.pinned_ports is not None else attempts
-        last: BaseException | None = None
-        for attempt in range(1, attempts + 1):
-            try:
-                return self._start_once()
-            except BaseException as exc:
-                # EVERY unsuccessful exit must tear the process down, not just
-                # the retry path: a boot timeout raises TimeoutError rather than
-                # QemuError, and __exit__ never runs if __enter__ raised, so
-                # anything that escapes here leaks a whole VM -- its host ports,
-                # its full -m memory, and its QMP socket on disk.
-                retryable = (
-                    isinstance(exc, QemuError)
-                    and "died early" in str(exc)
-                    and attempt < attempts
-                )
-                if not retryable:
-                    self._teardown_process()
-                    raise
-                last = exc
-                _LOG.warning(
-                    "VM boot attempt %d/%d failed (%s); retrying with new ports",
-                    attempt,
-                    attempts,
-                    exc,
-                )
-                self._teardown_process()
-                time.sleep(1.0 + attempt)
-        raise QemuError(str(last))
+        try:
+            return self._start_once()
+        except BaseException:
+            # EVERY unsuccessful exit must tear the process down: a boot timeout
+            # raises TimeoutError rather than QemuError, and __exit__ never runs
+            # if __enter__ raised, so anything that escapes here leaks a whole
+            # VM -- its host ports, its full -m memory, and its QMP socket.
+            self._teardown_process()
+            raise
 
     def _start_once(self) -> RuntimeState:
         if self._process is not None and self._process.poll() is None:
             return self.state()
-        ports = self.pinned_ports or GuestPorts(
-            server=free_port(),
-            chromium=free_port(),
-            vnc=free_port(),
-            vlc=free_port(),
-        )
+        ports = self.pinned_ports
+        if ports is None:
+            raise QemuError(
+                "no host ports: lease a block with "
+                "desktop.vm.pool.allocate_worker_ports and pass ports=..."
+            )
         hostfwd = ",".join(
             [
                 f"hostfwd=tcp::{ports.server}-:{GUEST_SERVER_PORT}",

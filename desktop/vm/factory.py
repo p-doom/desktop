@@ -45,13 +45,6 @@ ENVIRONMENT: dict[str, str] = {
     "DESKTOP_ENV_VM_LOG_DIR": "directory for QEMU stdout/serial logs",
     "DESKTOP_ENV_QMP_DIR": "directory for the QMP unix socket (must be short)",
     "DESKTOP_ENV_ACCEL": "force 'kvm' or 'tcg'; otherwise detected",
-    # Read by ``pool.allocate_worker_ports``, not by anything in this module, but
-    # listed here because this table is the package's one discoverable index of
-    # what the environment can change.
-    "DESKTOP_ENV_PORT_BASE": (
-        "pool port-block base, 1024..65535, must be aligned to the port stride; "
-        "otherwise derived from SLURM_JOB_ID"
-    ),
 }
 
 
