@@ -213,13 +213,18 @@ def qemu_session_factory(
        lock lives *inside* the session's scratch root, so two pooled sessions
        never contend for it.  Hand a pool an explicit shared ``scratch_root`` and
        the second session fails regardless of either setting.
+    4. The metadata goes in the lease's ``logdir``, NOT its ``workdir``.  The
+       workdir is scratch that ``PortLease.release`` removes with ``rmdir``, and
+       whose refusal to disappear is the only signal that a session leaked
+       something; writing a file we intend to keep into it made that signal
+       unreadable, because the directory could then never be empty.
     """
 
     def factory(lease: PortLease) -> DesktopSession:
         session = build_desktop_session(
             image=image,
             scratch_root=lease.workdir,
-            metadata_path=lease.workdir / "session.json",
+            metadata_path=lease.logdir / "session.json",
             require_single_task=require_single_task,
             transport_timeout_s=transport_timeout_s,
             ports=GuestPorts(
@@ -228,7 +233,7 @@ def qemu_session_factory(
                 vnc=lease.ports.vnc,
                 vlc=lease.ports.vlc,
             ),
-            log_dir=lease.logdir or lease.workdir,
+            log_dir=lease.logdir,
             **runtime_options,
         )
         session.start()

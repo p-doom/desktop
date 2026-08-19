@@ -197,8 +197,8 @@ def test_an_unpinned_runtime_does_allocate_its_own_ports(image):
 
 
 def test_two_leases_receive_disjoint_port_blocks(port_base, tmp_path):
-    first = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work")
-    second = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work")
+    first = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
+    second = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
     try:
         assert first.slot != second.slot
         first_ports = set(first.ports.as_dict().values())
@@ -211,7 +211,7 @@ def test_two_leases_receive_disjoint_port_blocks(port_base, tmp_path):
 
 def test_many_concurrent_leases_are_all_pairwise_disjoint(port_base, tmp_path):
     leases = [
-        allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work")
+        allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
         for _ in range(6)
     ]
     try:
@@ -227,10 +227,10 @@ def test_many_concurrent_leases_are_all_pairwise_disjoint(port_base, tmp_path):
 
 
 def test_a_released_slot_is_handed_out_again(port_base, tmp_path):
-    first = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work")
+    first = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
     slot, ports = first.slot, first.ports
     first.release()
-    second = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work")
+    second = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
     try:
         assert second.slot == slot and second.ports == ports
     finally:
@@ -242,6 +242,7 @@ def test_a_lease_held_by_another_PROCESS_is_not_handed_out_again(port_base, tmp_
     trivially because ``flock`` is per-open-file-description."""
     locks = tmp_path / "locks"
     work = tmp_path / "work"
+    logs = tmp_path / "logs"
     holder = subprocess.Popen(
         [
             sys.executable,
@@ -251,7 +252,8 @@ def test_a_lease_held_by_another_PROCESS_is_not_handed_out_again(port_base, tmp_
                 f"sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})\n"
                 "from desktop.vm.pool import allocate_worker_ports\n"
                 f"lease = allocate_worker_ports(\n"
-                f"    lock_dir={str(locks)!r}, work_dir={str(work)!r}\n"
+                f"    lock_dir={str(locks)!r}, work_dir={str(work)!r},\n"
+                f"    log_dir={str(logs)!r}\n"
                 f")\n"
                 "print(lease.ports.server, flush=True)\n"
                 "time.sleep(30)\n"
@@ -263,7 +265,7 @@ def test_a_lease_held_by_another_PROCESS_is_not_handed_out_again(port_base, tmp_
     )
     try:
         held_server_port = int(holder.stdout.readline().strip())
-        mine = allocate_worker_ports(lock_dir=locks, work_dir=work)
+        mine = allocate_worker_ports(lock_dir=locks, work_dir=work, log_dir=logs)
         try:
             assert mine.ports.server != held_server_port
             assert held_server_port not in set(mine.ports.as_dict().values())
@@ -282,7 +284,7 @@ def test_a_port_already_bound_by_something_else_is_skipped(port_base, tmp_path):
     blocker.bind(("", port_base + 2))  # the vnc port of slot 0
     blocker.listen(1)
     try:
-        lease = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work")
+        lease = allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
         try:
             assert lease.slot != 0
             assert port_base + 2 not in set(lease.ports.as_dict().values())
@@ -326,20 +328,26 @@ def test_a_non_numeric_configured_base_is_refused():
 def test_a_misaligned_configured_base_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("DESKTOP_ENV_PORT_BASE", "41005")
     with pytest.raises(ValueError, match="aligned to port stride"):
-        allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work")
+        allocate_worker_ports(lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs")
 
 
 def test_exhausting_every_slot_raises_rather_than_reusing_one(port_base, tmp_path):
     leases = [
         allocate_worker_ports(
-            lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", max_slots=2
+            lock_dir=tmp_path / "locks",
+            work_dir=tmp_path / "work",
+            log_dir=tmp_path / "logs",
+            max_slots=2
         )
         for _ in range(2)
     ]
     try:
         with pytest.raises(RuntimeError, match="no available port blocks"):
             allocate_worker_ports(
-                lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", max_slots=2
+                lock_dir=tmp_path / "locks",
+            work_dir=tmp_path / "work",
+            log_dir=tmp_path / "logs",
+            max_slots=2
             )
     finally:
         for lease in leases:
@@ -413,7 +421,7 @@ def test_the_pooled_factory_passes_the_flag_through(port_base, tmp_path, image, 
         "build_desktop_session",
         lambda **kwargs: seen.update(kwargs) or type("S", (), {"start": lambda s: None})(),
     )
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w")
+    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
     try:
         qemu_session_factory(image=image)(lease)
         assert seen["require_single_task"] is False
@@ -546,14 +554,17 @@ def test_the_lease_workdir_becomes_the_session_scratch_root(
     finally:
         lease.release()
     assert seen["scratch_root"] == lease.workdir
-    assert seen["metadata_path"] == lease.workdir / "session.json"
     assert seen["log_dir"] == lease.logdir
+    # NOT the workdir: `release` removes that with `rmdir`, and a file we mean to
+    # keep sitting in it makes the never-empty case the only case, which turns
+    # "the directory is still there" from a leak signal into noise.
+    assert seen["metadata_path"] == lease.logdir / "session.json"
 
 
 def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
     from desktop.vm.pool import DesktopPoolSession, _close_session_resources
 
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w")
+    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
     closed = []
     session = DesktopPoolSession(
         session_id="s",
@@ -568,7 +579,7 @@ def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
     assert closed == [1]
     assert lease._released is True
     # ... and the slot is immediately reusable.
-    again = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w")
+    again = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
     try:
         assert again.slot == lease.slot
     finally:
@@ -576,14 +587,14 @@ def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
 
 
 def test_a_lease_release_is_idempotent(port_base, tmp_path):
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w")
+    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
     lease.release()
     lease.release()
     assert lease._released is True
 
 
 def test_a_lease_is_a_context_manager(port_base, tmp_path):
-    with allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w") as lease:
+    with allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g") as lease:
         assert isinstance(lease, PortLease)
     assert lease._released is True
 
@@ -616,19 +627,56 @@ def test_a_released_lease_removes_its_own_working_directory(port_base, tmp_path)
     assert workdir.is_dir() and logdir.is_dir()
     lease.release()
     assert not workdir.exists()
-    assert not logdir.exists()
+    assert logdir.is_dir(), "the log directory exists to outlive the lease"
     assert (tmp_path / "w").is_dir(), "the shared root itself must survive"
 
 
 def test_a_lease_whose_scratch_is_not_empty_is_left_alone(port_base, tmp_path):
     """``rmdir``, not ``rmtree``: a session that failed to clean up its own scratch
     must leave visible evidence rather than have it silently deleted."""
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w")
+    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g")
     leftover = lease.workdir / "desktop-env-something" / "evidence.txt"
     leftover.parent.mkdir(parents=True)
     leftover.write_text("a session did not clean up")
     lease.release()
     assert leftover.is_file(), "evidence of a failed cleanup must not be destroyed"
+
+
+def test_a_pooled_session_leaves_its_scratch_empty_for_the_lease_to_remove(
+    port_base, tmp_path, image, monkeypatch
+):
+    """The two halves of the contract have to hold at the same time.
+
+    "``rmdir`` failed, so something leaked" is only information if the clean case
+    really is empty.  Checking the leftover case alone passed while the pooled
+    factory wrote ``session.json`` into the very directory it wanted removed:
+    ``rmdir`` then raised ``ENOTEMPTY`` on every release, ``suppress(OSError)``
+    swallowed it, and a genuine leak was indistinguishable from a clean exit.
+    """
+    from desktop.vm.session import DesktopSession
+
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g"
+    )
+    built: list[DesktopSession] = []
+
+    def real_session_over_a_dummy_runtime(*, image, ports, log_dir, **kwargs):
+        """Everything the factory decides, and the real metadata writer."""
+        session = DesktopSession(DummyRuntime(), **kwargs)
+        built.append(session)
+        return session
+
+    monkeypatch.setattr(
+        factory_module, "build_desktop_session", real_session_over_a_dummy_runtime
+    )
+    session = qemu_session_factory(image=image)(lease)
+    assert built == [session]
+    session.close()
+
+    assert (lease.logdir / "session.json").is_file(), "the metadata must be kept"
+    assert sorted(p.name for p in lease.workdir.iterdir()) == []
+    lease.release()
+    assert not lease.workdir.exists()
 
 
 def test_a_missing_image_is_an_error_rather_than_a_guess(monkeypatch):

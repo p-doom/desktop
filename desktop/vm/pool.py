@@ -95,33 +95,36 @@ class WorkerPorts:
 
 @dataclass
 class PortLease:
-    """A held slot.  The advisory lock lives as long as the lease does."""
+    """A held slot.  The advisory lock lives as long as the lease does.
+
+    ``workdir`` is scratch and is removed on release.  ``logdir`` is the lease's
+    persistent artifact directory -- QEMU's log and the session metadata are
+    written there precisely so they survive the lease -- and is never removed.
+    """
 
     ports: WorkerPorts
     slot: int
     workdir: Path
+    logdir: Path
     _lock_file: TextIO
-    logdir: Path | None = None
     _released: bool = False
 
     def release(self) -> None:
-        """Drop the advisory lock and remove the lease's own working directory.
+        """Drop the advisory lock and remove the lease's own scratch directory.
 
-        Only the tree this lease created is removed, and only if it is empty.
-        ``rmtree`` is deliberately NOT used, so a session that failed to clean up
+        ``rmtree`` is deliberately NOT used: a session that failed to clean up
         its own scratch leaves visible evidence instead of having it deleted
-        underneath the diagnosis.
+        underneath the diagnosis.  For that to mean anything the empty case has
+        to be the normal one, so nothing this lease is expected to keep may be
+        written into ``workdir``.
         """
         if self._released:
             return
         fcntl.flock(self._lock_file, fcntl.LOCK_UN)
         self._lock_file.close()
         self._released = True
-        for directory in (self.workdir, self.logdir):
-            if directory is None:
-                continue
-            with contextlib.suppress(OSError):
-                directory.rmdir()
+        with contextlib.suppress(OSError):
+            self.workdir.rmdir()
 
     def __enter__(self) -> Self:
         return self
@@ -181,8 +184,8 @@ def get_port_base(job_id: str | None, *, configured_base: str | None = None) -> 
 def allocate_worker_ports(
     *,
     lock_dir: str | Path,
+    log_dir: str | Path,
     work_dir: str | Path | None = None,
-    log_dir: str | Path | None = None,
     stride: int = 10,
     max_slots: int = 512,
 ) -> PortLease:
@@ -198,11 +201,10 @@ def allocate_worker_ports(
         )
     root = Path(lock_dir)
     work_root = Path(work_dir) if work_dir is not None else root
-    log_root = Path(log_dir) if log_dir is not None else None
+    log_root = Path(log_dir)
     root.mkdir(parents=True, exist_ok=True)
     work_root.mkdir(parents=True, exist_ok=True)
-    if log_root is not None:
-        log_root.mkdir(parents=True, exist_ok=True)
+    log_root.mkdir(parents=True, exist_ok=True)
     for slot in range(max_slots):
         ports = ports_for_worker(base, slot, stride=stride)
         lock_file = (root / f"ports_{slot:04d}.lock").open("a+")
@@ -219,16 +221,15 @@ def allocate_worker_ports(
             continue
         lease_name = f"w{os.getpid()}_{slot:x}"
         workdir = work_root / lease_name
-        logdir = log_root / lease_name if log_root is not None else None
+        logdir = log_root / lease_name
         workdir.mkdir(parents=True, exist_ok=True)
-        if logdir is not None:
-            logdir.mkdir(parents=True, exist_ok=True)
+        logdir.mkdir(parents=True, exist_ok=True)
         lock_file.seek(0)
         lock_file.truncate()
         lock_file.write(f"pid={os.getpid()} ports={ports}\n")
         lock_file.flush()
         return PortLease(
-            ports=ports, slot=slot, workdir=workdir, _lock_file=lock_file, logdir=logdir
+            ports=ports, slot=slot, workdir=workdir, logdir=logdir, _lock_file=lock_file
         )
     raise RuntimeError(f"no available port blocks under {root} from base {base}")
 
@@ -244,8 +245,8 @@ class PortAllocator(Protocol):
         self,
         *,
         lock_dir: str | Path,
+        log_dir: str | Path,
         work_dir: str | Path | None = None,
-        log_dir: str | Path | None = None,
     ) -> PortLease: ...
 
 
@@ -963,11 +964,10 @@ def _session_payload[DesktopEnvT: DesktopSessionEnv](
         "last_error": session.last_error,
         "lease_slot": session.lease.slot,
         "workdir": str(session.lease.workdir),
+        "logdir": str(session.lease.logdir),
+        "persistent_logdir": str(session.lease.logdir.resolve()),
         "ports": session.lease.ports.as_dict(),
     }
-    if session.lease.logdir is not None:
-        payload["logdir"] = str(session.lease.logdir)
-        payload["persistent_logdir"] = str(session.lease.logdir.resolve())
     return payload
 
 

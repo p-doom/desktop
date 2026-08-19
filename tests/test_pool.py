@@ -67,21 +67,19 @@ def fake_allocator_factory(tmp_path: Path):
             released.append(self.slot)
             self._released = True
 
-    def allocate(*, lock_dir, work_dir=None, log_dir=None) -> PortLease:
+    def allocate(*, lock_dir, log_dir, work_dir=None) -> PortLease:
         slot = counter["slot"]
         counter["slot"] += 1
         workdir = Path(work_dir or lock_dir) / f"w{slot}"
+        logdir = Path(log_dir) / f"w{slot}"
         workdir.mkdir(parents=True, exist_ok=True)
-        logdir = None
-        if log_dir is not None:
-            logdir = Path(log_dir) / f"w{slot}"
-            logdir.mkdir(parents=True, exist_ok=True)
+        logdir.mkdir(parents=True, exist_ok=True)
         return FakeLease(
             ports=ports_for_worker(50000, slot),
             slot=slot,
             workdir=workdir,
-            _lock_file=FakeLockFile(slot),  # type: ignore[arg-type]
             logdir=logdir,
+            _lock_file=FakeLockFile(slot),  # type: ignore[arg-type]
         )
 
     allocate.released = released  # type: ignore[attr-defined]
