@@ -37,6 +37,7 @@ from desktop.vm.factory import (
 )
 from desktop.vm.pool import (
     PORT_BASE,
+    DesktopPoolConfig,
     PortLease,
     WorkerPorts,
     allocate_worker_ports,
@@ -113,7 +114,7 @@ def test_the_lease_ports_reach_the_runtime(port_base, tmp_path, image, monkeypat
         lock_dir=tmp_path / "locks", work_dir=tmp_path / "work", log_dir=tmp_path / "logs"
     )
     try:
-        qemu_session_factory(image=image)(lease)
+        qemu_session_factory(image=image, startup_timeout_s=1200.0)(lease)
     finally:
         lease.release()
     assert isinstance(seen["ports"], GuestPorts)
@@ -385,9 +386,9 @@ def test_the_pooled_factory_passes_the_flag_through(port_base, tmp_path, image, 
         base=port_base,
     )
     try:
-        qemu_session_factory(image=image)(lease)
+        qemu_session_factory(image=image, startup_timeout_s=1200.0)(lease)
         assert seen["require_single_task"] is False
-        qemu_session_factory(image=image, require_single_task=True)(lease)
+        qemu_session_factory(image=image, startup_timeout_s=1200.0, require_single_task=True)(lease)
         assert seen["require_single_task"] is True
     finally:
         lease.release()
@@ -515,7 +516,7 @@ def test_the_lease_workdir_becomes_the_session_scratch_root(
         base=port_base,
     )
     try:
-        qemu_session_factory(image=image)(lease)
+        qemu_session_factory(image=image, startup_timeout_s=1200.0)(lease)
     finally:
         lease.release()
     assert seen["scratch_root"] == lease.workdir
@@ -650,7 +651,7 @@ def test_a_pooled_session_leaves_its_scratch_empty_for_the_lease_to_remove(
     monkeypatch.setattr(
         factory_module, "build_desktop_session", real_session_over_a_dummy_runtime
     )
-    session = qemu_session_factory(image=image)(lease)
+    session = qemu_session_factory(image=image, startup_timeout_s=1200.0)(lease)
     assert built == [session]
     session.close()
 
@@ -717,6 +718,59 @@ def test_a_well_formed_memory_size_is_accepted(image, good):
 def test_a_zero_smp_is_refused(image):
     with pytest.raises(ConfigError, match="at least 1"):
         build_qemu_runtime(image=image, smp=0, accelerator="tcg")
+
+
+def test_a_startup_budget_below_the_runtimes_own_phases_is_refused(image):
+    """We publish `startup_timeout_s` for a REMOTE supervisor to judge us by.
+
+    It shipped at 840 s against phases that legitimately sum to 960 (boot 300 +
+    QMP connect 60 + snapshot 600), so a slow but healthy first boot was
+    classified `stale_starting`, restarted mid-snapshot, leaked its VM, and
+    repeated. Nothing enforced the relation; the number was only ever reported.
+    """
+    runtime = build_qemu_runtime(image=image, accelerator="tcg")
+    assert runtime.start_budget_s == 960.0
+
+    with pytest.raises(ConfigError, match="below this runtime's own worst-case"):
+        qemu_session_factory(
+            image=image, accelerator="tcg", startup_timeout_s=runtime.start_budget_s - 1
+        )
+
+    qemu_session_factory(
+        image=image, accelerator="tcg", startup_timeout_s=runtime.start_budget_s
+    )
+
+
+def test_the_shipped_pool_default_satisfies_the_invariant(image):
+    """The default configuration has to be a legal one, or the check is theatre."""
+    qemu_session_factory(
+        image=image,
+        accelerator="tcg",
+        startup_timeout_s=DesktopPoolConfig().startup_timeout_s,
+    )
+
+
+def test_a_lowered_phase_timeout_lowers_the_budget_it_is_checked_against(image):
+    """The invariant is the relation, not either number: shrink a phase and a
+    smaller budget becomes legal.
+
+    `snapshot_timeout_s` is the largest term (600 of the 960) and
+    `build_qemu_runtime` does not expose it, so `boot_timeout_s` is the only phase
+    a caller can currently move.
+    """
+    assert (
+        build_qemu_runtime(
+            image=image, accelerator="tcg", boot_timeout_s=60.0
+        ).start_budget_s
+        == 720.0
+    )
+    qemu_session_factory(
+        image=image, accelerator="tcg", boot_timeout_s=60.0, startup_timeout_s=720.0
+    )
+    with pytest.raises(ConfigError, match="below this runtime's own worst-case"):
+        qemu_session_factory(
+            image=image, accelerator="tcg", boot_timeout_s=60.0, startup_timeout_s=719.0
+        )
 
 
 def test_every_documented_variable_has_a_description():

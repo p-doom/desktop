@@ -179,6 +179,7 @@ def build_desktop_session(
 
 def qemu_session_factory(
     *,
+    startup_timeout_s: float,
     image: Path | str | None = None,
     require_single_task: bool = False,
     transport_timeout_s: float = 30.0,
@@ -186,7 +187,10 @@ def qemu_session_factory(
 ) -> Callable[[PortLease], DesktopSession]:
     """A ``session_factory`` for ``DesktopSessionPool``, bound to one image.
 
-    Three couplings here are load-bearing and easy to get wrong separately:
+    ``startup_timeout_s`` is the pool's budget for one session, and it is checked
+    against the runtime's own phase timeouts HERE, once, rather than per session.
+
+    Five couplings here are load-bearing and easy to get wrong separately:
 
     1. The lease's ports are pinned into the runtime.  The pool holds an
        ``flock`` on a port block for the lease's lifetime; if the runtime then
@@ -211,7 +215,22 @@ def qemu_session_factory(
        whose refusal to disappear is the only signal that a session leaked
        something; writing a file we intend to keep into it made that signal
        unreadable, because the directory could then never be empty.
+    5. The startup budget must exceed the runtime's own phase timeouts.  The pool
+       publishes ``startup_timeout_s`` in its status file and a remote supervisor
+       restarts anything ``starting`` for longer than that, so a budget below our
+       own worst case means a slow but healthy first boot is classified stale and
+       killed mid-snapshot -- which leaks the VM and then repeats.  Checked here
+       because this is the one place that knows both numbers.
     """
+    budget_s = build_qemu_runtime(image=image, **runtime_options).start_budget_s
+    if startup_timeout_s < budget_s:
+        raise ConfigError(
+            f"startup_timeout_s={startup_timeout_s:.0f}s is below this runtime's "
+            f"own worst-case start of {budget_s:.0f}s (boot "
+            f"+ QMP connect + snapshot). A supervisor judging a starting desktop "
+            f"by the smaller number restarts healthy VMs mid-boot; raise the pool "
+            f"budget or lower the runtime's phase timeouts."
+        )
 
     def factory(lease: PortLease) -> DesktopSession:
         session = build_desktop_session(
@@ -246,11 +265,19 @@ def build_desktop_pool(
     """A pool of QEMU-backed sessions.  Not started.
 
     ``DesktopSessionPool.start()`` begins prewarming; until then nothing boots.
+    The image and the runtime options are resolved and validated here rather than
+    on the first session's startup thread, where a ``ConfigError`` would surface
+    only as a failure counter.
     """
+    pool_config = config or DesktopPoolConfig()
     return DesktopSessionPool(
-        config=config or DesktopPoolConfig(),
+        config=pool_config,
         root_dir=Path(root_dir),
-        session_factory=qemu_session_factory(image=image, **runtime_options),
+        session_factory=qemu_session_factory(
+            startup_timeout_s=pool_config.startup_timeout_s,
+            image=image,
+            **runtime_options,
+        ),
         worker_name=worker_name,
     )
 

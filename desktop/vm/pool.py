@@ -275,7 +275,11 @@ class DesktopPoolConfig:
     max_rollouts_per_session: int = 50
     checkout_timeout_s: float = 900.0
     lease_timeout_s: float = 300.0
-    startup_timeout_s: float = 840.0
+    # Must exceed the runtime's own worst-case start, which is 960 s at
+    # QemuRuntime's default phase timeouts; `factory.build_desktop_pool` enforces
+    # the relation, and the slack covers port allocation and isolation, which
+    # happen before the runtime's first phase but inside a supervisor's clock.
+    startup_timeout_s: float = 1200.0
     startup_retry_backoff_s: float = 30.0
     startup_retry_backoff_max_s: float = 300.0
     status_heartbeat_interval_s: float = 10.0

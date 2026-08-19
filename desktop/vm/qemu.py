@@ -42,7 +42,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from .runtime import Checkpoint, GuestPorts, RuntimeState
 
@@ -56,6 +56,17 @@ GUEST_VLC_PORT = 8080
 
 BASE_CHECKPOINT = "desktop_env_base"
 
+# The phases of one legitimate start, worst case. Named rather than inlined
+# because their SUM is what a pool publishes as `startup_timeout_s` for a remote
+# supervisor to judge a starting VM by, and the two numbers drifted apart: 840 s
+# was published against phases that could legitimately take 960, so a slow but
+# healthy first boot was classified stale and restarted mid-snapshot.
+# `factory.build_desktop_pool` is where the relation is enforced.
+QMP_CONNECT_TIMEOUT_S: Final = 60.0
+BOOT_TIMEOUT_S: Final = 300.0
+RESTORE_TIMEOUT_S: Final = 120.0
+SNAPSHOT_TIMEOUT_S: Final = 600.0
+
 
 class QemuError(RuntimeError):
     """QEMU could not be started, snapshotted, forked, or reached."""
@@ -64,7 +75,13 @@ class QemuError(RuntimeError):
 class QmpClient:
     """Minimal synchronous QMP client (enough for human-monitor-command)."""
 
-    def __init__(self, path: str, *, connect_timeout_s: float = 60.0, io_timeout_s: float = 600.0) -> None:
+    def __init__(
+        self,
+        path: str,
+        *,
+        connect_timeout_s: float = QMP_CONNECT_TIMEOUT_S,
+        io_timeout_s: float = SNAPSHOT_TIMEOUT_S,
+    ) -> None:
         self.path = path
         deadline = time.time() + connect_timeout_s
         last: Exception | None = None
@@ -142,9 +159,9 @@ class QemuRuntime:
         smp: int = 4,
         memory: str = "8G",
         accelerator: str | None = None,
-        boot_timeout_s: float = 300.0,
-        restore_timeout_s: float = 120.0,
-        snapshot_timeout_s: float = 600.0,
+        boot_timeout_s: float = BOOT_TIMEOUT_S,
+        restore_timeout_s: float = RESTORE_TIMEOUT_S,
+        snapshot_timeout_s: float = SNAPSHOT_TIMEOUT_S,
         base_checkpoint: str = BASE_CHECKPOINT,
         runtime_id: str | None = None,
         owns_image: bool = False,
@@ -179,6 +196,18 @@ class QemuRuntime:
         self._log_path: Path | None = None
         self._checkpoints: dict[str, Checkpoint] = {}
         self._children: list[QemuRuntime] = []
+
+    @property
+    def start_budget_s(self) -> float:
+        """Worst case for one legitimate start, as the sum of its phases.
+
+        ``_start_session`` cannot be bounded from outside: a thread blocked in a
+        socket read is not cancellable, and a watchdog that gave up on a starting
+        session would abandon a live VM -- the exact leak the reaper exists for.
+        The phase timeouts ARE the bound, so the only thing left to hold
+        ourselves to is that their sum fits inside the budget we publish.
+        """
+        return self.boot_timeout_s + QMP_CONNECT_TIMEOUT_S + self.snapshot_timeout_s
 
     @staticmethod
     def _default_qmp_dir() -> Path:
