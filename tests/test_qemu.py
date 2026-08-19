@@ -20,6 +20,7 @@ import json
 import os
 import socket
 import stat
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -160,6 +161,7 @@ def captured_argv(monkeypatch):
 
     def fake_popen(command, **kwargs):
         captured["command"] = command
+        captured["kwargs"] = kwargs
         return FakeProcess()
 
     monkeypatch.setattr(qemu_module.subprocess, "Popen", fake_popen)
@@ -215,6 +217,21 @@ def test_a_qmp_monitor_is_always_requested(base_image, captured_argv, tmp_path):
     command = captured_argv["command"]
     qmp = command[command.index("-qmp") + 1]
     assert qmp.startswith("unix:") and "server=on" in qmp and "wait=off" in qmp
+
+
+def test_qemu_never_inherits_our_stdin(base_image, captured_argv, tmp_path):
+    """``-nographic`` multiplexes the guest serial console onto stdio.
+
+    ``close_fds`` does not apply to fds 0/1/2, so without an explicit redirect
+    QEMU reads the pool process's fd 0 and consumes whatever a supervisor, a
+    labctl runner, or a wrapper pipes in -- silently and intermittently.
+    """
+    QemuRuntime(
+        image=base_image, accelerator="tcg", ports=GuestPorts(server=42050),
+        log_dir=tmp_path, qmp_dir=Path("/tmp"),
+    ).start()
+    assert "-nographic" in captured_argv["command"]
+    assert captured_argv["kwargs"]["stdin"] == subprocess.DEVNULL
 
 
 def test_a_too_long_qmp_path_is_refused_before_qemu_starts(base_image, tmp_path):

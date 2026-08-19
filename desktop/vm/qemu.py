@@ -316,6 +316,11 @@ class QemuRuntime:
             "virtio-net-pci,netdev=net0",
             "-display",
             "none",
+            # -nographic is what puts the guest's serial console on stdio, which
+            # is why the log below is worth reading after a boot that never came
+            # up.  It is also why stdin MUST be redirected: close_fds never
+            # applies to fd 0, so without it QEMU reads whatever is piped into
+            # the pool process and eats a supervisor's protocol.
             "-nographic",
             # A QMP monitor is what makes savevm/loadvm reachable at all.
             "-qmp",
@@ -332,7 +337,12 @@ class QemuRuntime:
         )
         started = time.time()
         handle = log_path.open("w")
-        process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
         self._process = process
         self._ports = ports
         self._qmp_path = qmp_path
