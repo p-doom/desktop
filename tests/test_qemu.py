@@ -234,6 +234,29 @@ def test_qemu_never_inherits_our_stdin(base_image, captured_argv, tmp_path):
     assert captured_argv["kwargs"]["stdin"] == subprocess.DEVNULL
 
 
+def test_qemu_lands_in_our_own_process_group(base_image, tmp_path, monkeypatch):
+    """What makes an orphaned VM reapable at all.
+
+    A supervisor that lost the pool cannot know a per-VM process group -- least
+    of all a VM that was still booting -- but it does know the group of the
+    worker it spawned, and killing that group only reaches QEMU while QEMU is in
+    it.  So this asserts the kernel's answer, not the absence of a keyword.
+    """
+    stub = tmp_path / "qemu-stub"
+    stub.write_text("#!/bin/sh\nexec sleep 60\n", encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setattr(QemuRuntime, "_wait_ready", lambda *a, **k: None)
+    runtime = QemuRuntime(
+        image=base_image, qemu_binary=stub, accelerator="tcg",
+        ports=GuestPorts(server=42060), log_dir=tmp_path, qmp_dir=Path("/tmp"),
+    )
+    runtime.start()
+    try:
+        assert os.getpgid(runtime.state().detail["pid"]) == os.getpgrp()
+    finally:
+        runtime.stop()
+
+
 def test_a_too_long_qmp_path_is_refused_before_qemu_starts(base_image, tmp_path):
     """AF_UNIX caps the path length; failing here beats failing inside QEMU."""
     deep = tmp_path / ("d" * 90) / ("e" * 90)

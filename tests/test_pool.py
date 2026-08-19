@@ -42,9 +42,6 @@ class FakeSession:
         if self.close_raises:
             raise RuntimeError("close exploded")
 
-    def health(self) -> dict:
-        return {"ok": True, "server_port": self.lease.ports.server}
-
     def do_work(self, value: int) -> int:
         self.calls.append(f"do_work({value})")
         return value * 2
@@ -545,37 +542,8 @@ def test_the_status_file_describes_each_session_and_its_ports(pool_factory):
     (session,) = pool.snapshot()["sessions"]
     assert session["status"] == "ready"
     assert set(session["ports"]) == {"server", "chromium", "vnc", "vlc"}
-    assert session["health"] == {"ok": True, "server_port": session["ports"]["server"]}
     assert session["lease_slot"] == 0
     assert "workdir" in session
-
-
-def test_a_session_whose_health_raises_is_still_reported(pool_factory):
-    pool = pool_factory(min_ready_sessions=1)
-    pool.start()
-    assert wait_until(lambda: len(pool_factory.built) == 1)
-    pool_factory.built[0].health = lambda: (_ for _ in ()).throw(RuntimeError("no health"))
-    (session,) = pool.snapshot()["sessions"]
-    assert "health_error" in session["health"]
-
-
-def test_a_session_without_a_health_method_reports_an_empty_health(tmp_path):
-    class Bare:
-        def close(self) -> None:
-            pass
-
-    pool = DesktopSessionPool(
-        config=DesktopPoolConfig(min_ready_sessions=1, status_heartbeat_interval_s=0),
-        root_dir=tmp_path / "bare",
-        session_factory=lambda lease: Bare(),
-        port_allocator=fake_allocator_factory(tmp_path / "bare"),
-    )
-    try:
-        pool.start()
-        assert wait_until(lambda: pool.snapshot()["ready"] == 1)
-        assert pool.snapshot()["sessions"][0]["health"] == {}
-    finally:
-        pool.close()
 
 
 def test_the_status_file_is_never_seen_partially_written(pool_factory):

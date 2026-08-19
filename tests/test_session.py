@@ -25,11 +25,9 @@ from desktop.vm.runtime import Checkpoint, GuestPorts, RuntimeState
 from desktop.vm.session import (
     DesktopSession,
     GuestScript,
-    ProcessGroupReaper,
     ResetReceipt,
     SessionError,
     canonical_json,
-    process_group_of,
     sha256_file,
     task_unique_session_id,
     write_json_atomic,
@@ -575,50 +573,3 @@ def test_a_guest_script_reports_invalid_json_as_such():
         script.parse({"output": "DESKTOP_ENV_JSON={not json}"})
 
 
-def test_the_reaper_ignores_its_own_group_and_invalid_ids():
-    reaper = ProcessGroupReaper((os.getpgrp(), 0, -1))
-    assert reaper.group_ids == ()
-    assert reaper.alive() == ()
-
-
-def test_the_reaper_reports_a_dead_group_as_gone():
-    assert ProcessGroupReaper((999_999,)).alive() == ()
-
-
-def test_the_reaper_terminates_a_real_process_group():
-    import subprocess
-
-    child = subprocess.Popen(
-        ["sleep", "60"], start_new_session=True, stdout=subprocess.DEVNULL
-    )
-    try:
-        group = process_group_of(child.pid)
-        assert group is not None
-        reaper = ProcessGroupReaper((group,))
-        assert reaper.alive() == (group,)
-        assert reaper.terminate_and_wait(terminate_timeout_s=10.0, kill_timeout_s=5.0)
-        assert reaper.alive() == ()
-    finally:
-        if child.poll() is None:
-            child.kill()
-        child.wait()
-
-
-def test_a_zombie_only_group_counts_as_dead():
-    """``killpg(pgid, 0)`` succeeds against a group whose only member is a zombie,
-    which is why /proc is scanned instead."""
-    import subprocess
-    import time
-
-    child = subprocess.Popen(["true"], start_new_session=True)
-    group = process_group_of(child.pid)
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and child.poll() is None:
-        time.sleep(0.01)
-    # The child has exited but has not been reaped, so it is a zombie in `group`.
-    assert ProcessGroupReaper((group,)).alive() == ()
-    child.wait()
-
-
-def test_process_group_of_an_unknown_pid_is_none():
-    assert process_group_of(999_999) is None

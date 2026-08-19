@@ -946,7 +946,7 @@ def _default_worker_name() -> str:
 def _session_payload[DesktopEnvT: DesktopSessionEnv](
     session: DesktopPoolSession[DesktopEnvT], *, now: float
 ) -> dict[str, Any]:
-    """Serialize one session's state, port lease, and health details."""
+    """Serialize one session's state and port lease."""
     activity_at = session.last_activity_at or session.updated_at
     payload = {
         "session_id": session.session_id,
@@ -964,7 +964,6 @@ def _session_payload[DesktopEnvT: DesktopSessionEnv](
         "lease_slot": session.lease.slot,
         "workdir": str(session.lease.workdir),
         "ports": session.lease.ports.as_dict(),
-        "health": _env_health(session.env),
     }
     if session.lease.logdir is not None:
         payload["logdir"] = str(session.lease.logdir)
@@ -1015,20 +1014,6 @@ class _ActivityTrackedDesktopEnv:
                 self._touch()
 
         return tracked_call
-
-
-def _env_health(env: DesktopSessionEnv) -> Mapping[str, object]:
-    """Safely ask a session for health details."""
-    health = getattr(env, "health", None)
-    if not callable(health):
-        return {}
-    try:
-        value = health()
-    except Exception as exc:
-        return {"health_error": repr(exc)}
-    if isinstance(value, Mapping):
-        return cast(Mapping[str, object], value)
-    return {"value": value}
 
 
 def _close_session_resources[DesktopEnvT: DesktopSessionEnv](

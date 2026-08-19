@@ -337,6 +337,13 @@ class QemuRuntime:
         )
         started = time.time()
         handle = log_path.open("w")
+        # No start_new_session: QEMU stays in the caller's process group ON
+        # PURPOSE, and that is what makes an orphan reapable.  A supervisor that
+        # loses the pool cannot know a per-VM pgid -- least of all for a VM still
+        # booting, which never got as far as publishing anything -- but it does
+        # know the group of the worker it spawned itself, and killing that group
+        # reaches every VM the worker started, in every phase.  Give QEMU its own
+        # session and that single kill stops reaching it.
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,

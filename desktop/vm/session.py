@@ -19,7 +19,6 @@ import os
 import re
 import secrets
 import shutil
-import signal
 import socket
 import sys
 import tempfile
@@ -174,103 +173,6 @@ print({self.marker!r}+json.dumps({{'root':chosen}}))
         if not isinstance(payload, dict) or "root" not in payload:
             raise SessionError(f"guest root resolution failed: {payload!r}")
         return PurePosixPath(str(payload["root"]))
-
-
-class ProcessGroupReaper:
-    """Terminate whole process groups and confirm they are actually gone.
-
-    Signalling a pid is not enough for a VM: QEMU spawns helpers, and a
-    ``terminate`` that returns does not mean the group is dead.  This escalates
-    SIGTERM -> SIGKILL and *verifies* by scanning ``/proc`` for live members,
-    ignoring zombies, because ``killpg(pgid, 0)`` succeeds against a group whose
-    only remaining member is a zombie.
-    """
-
-    def __init__(self, group_ids: tuple[int, ...]) -> None:
-        self.group_ids = tuple(
-            gid for gid in group_ids if gid > 0 and gid != os.getpgrp()
-        )
-
-    def alive(self) -> tuple[int, ...]:
-        return tuple(gid for gid in self.group_ids if self._group_alive(gid))
-
-    def signal(self, sig: int, *, group_ids: tuple[int, ...] | None = None) -> None:
-        for gid in group_ids if group_ids is not None else self.group_ids:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(gid, sig)
-
-    def terminate_and_wait(
-        self, *, terminate_timeout_s: float = 30.0, kill_timeout_s: float = 10.0
-    ) -> bool:
-        remaining = self.alive()
-        if remaining:
-            self.signal(signal.SIGTERM, group_ids=remaining)
-        if self._wait(terminate_timeout_s):
-            return True
-        remaining = self.alive()
-        if remaining:
-            self.signal(signal.SIGKILL, group_ids=remaining)
-        return self._wait(kill_timeout_s)
-
-    def _wait(self, timeout_s: float) -> bool:
-        deadline = time.monotonic() + timeout_s
-        while True:
-            if not self.alive():
-                return True
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-
-    @staticmethod
-    def _group_alive(group_id: int) -> bool:
-        status = _linux_process_group_has_live_members(group_id)
-        if status is not None:
-            return status
-        try:
-            os.killpg(group_id, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
-
-
-def _linux_process_group_has_live_members(group_id: int) -> bool | None:
-    """``None`` when ``/proc`` is unavailable; otherwise ignore zombies."""
-    if not os.path.isdir("/proc"):
-        return None
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return None
-    for entry in entries:
-        if not entry.isdigit():
-            continue
-        try:
-            with open(os.path.join("/proc", entry, "stat"), encoding="utf-8") as handle:
-                text = handle.read()
-        except OSError:
-            continue
-        close = text.rfind(")")
-        if close < 0:
-            continue
-        fields = text[close + 2 :].split()
-        if len(fields) < 3:
-            continue
-        try:
-            member_group = int(fields[2])
-        except ValueError:
-            continue
-        if member_group == group_id and fields[0] != "Z":
-            return True
-    return False
-
-
-def process_group_of(pid: int) -> int | None:
-    try:
-        return os.getpgid(pid)
-    except OSError:
-        return None
 
 
 @dataclass(frozen=True)
@@ -658,21 +560,11 @@ class DesktopSession:
         """
         errors: list[str] = []
         stopped = True
-        pid = None
-        with contextlib.suppress(Exception):
-            pid = self.runtime.state().detail.get("pid")  # type: ignore[attr-defined]
         try:
             self.runtime.stop()
         except Exception as exc:
             stopped = False
             errors.append(f"runtime stop failed: {exc}")
-        if isinstance(pid, int):
-            group = process_group_of(pid)
-            if group is not None:
-                reaper = ProcessGroupReaper((group,))
-                if reaper.alive() and not reaper.terminate_and_wait():
-                    stopped = False
-                    errors.append("runtime process group survived SIGKILL")
         self.transport = None
         self.client = None
         scratch = self.scratch_dir
@@ -717,12 +609,10 @@ class DesktopSession:
 __all__ = [
     "DesktopSession",
     "GuestScript",
-    "ProcessGroupReaper",
     "ResetReceipt",
     "SessionError",
     "canonical_json",
     "node_port_allocation_lock",
-    "process_group_of",
     "sha256_file",
     "task_unique_session_id",
     "write_json_atomic",

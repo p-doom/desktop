@@ -45,7 +45,7 @@ from .sandbox_protocol import (
     SupportsSandboxEndpoint,
     TransferTooLargeError,
 )
-from .session import DesktopSession, GuestScript, ProcessGroupReaper, ResetReceipt, SessionError
+from .session import DesktopSession, GuestScript, ResetReceipt, SessionError
 
 __all__ = [
     "DEFAULT_TRANSFER_TIMEOUT_S",
@@ -63,7 +63,6 @@ __all__ = [
     "GuestScript",
     "OSWorldClient",
     "PortLease",
-    "ProcessGroupReaper",
     "QemuError",
     "QemuRuntime",
     "QmpClient",
