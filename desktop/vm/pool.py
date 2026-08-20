@@ -62,6 +62,10 @@ CONSUMED_STATUS_FIELDS: Final = (
     # stopped both still leave one on disk
     "closed",
     "updated_at",
+    # the stuck-desktop decision: `summarize_starting_sessions` reads both
+    # without a default, so a rename here is a KeyError in the supervisor
+    "startup_timeout_s",
+    "starting_sessions",
     # reported, not routed on
     "total_started",
     "total_failed",
