@@ -37,8 +37,8 @@ class StepReceipt:
     requested_operations: tuple[Operation, ...]
     cursor_before: tuple[int, int]
     cursor_after: tuple[int, int]
-    host_cursor_before: tuple[int, int] | None
-    host_cursor_after: tuple[int, int] | None
+    host_cursor_before: tuple[int, int]
+    host_cursor_after: tuple[int, int]
     cursor_readback_verified: bool
     error: str | None
     failure_kind: str | None
@@ -51,12 +51,8 @@ class StepReceipt:
             "requested_operations": [item.as_dict() for item in self.requested_operations],
             "cursor_before": list(self.cursor_before),
             "cursor_after": list(self.cursor_after),
-            "host_cursor_before": (
-                None if self.host_cursor_before is None else list(self.host_cursor_before)
-            ),
-            "host_cursor_after": (
-                None if self.host_cursor_after is None else list(self.host_cursor_after)
-            ),
+            "host_cursor_before": list(self.host_cursor_before),
+            "host_cursor_after": list(self.host_cursor_after),
             "cursor_readback_verified": self.cursor_readback_verified,
             "error": self.error,
             "failure_kind": self.failure_kind,
@@ -72,8 +68,13 @@ class Engine:
         transport: GuiTransport,
         *,
         click_backend: str = PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
-        verify_cursor_readback: bool = True,
     ) -> None:
+        # There is no `verify_cursor_readback=False`.  With it off, `_verify`
+        # returned True unconditionally, so the receipt said
+        # `cursor_readback_verified: true` while `host_cursor_before/after` were
+        # both None -- a receipt asserting a check that provably had not run, which
+        # is worse than one that admits it did not.  Nothing outside a single test
+        # ever passed False.
         if click_backend not in CLICK_BACKENDS:
             raise ExecutionError(
                 f"unsupported click backend: {click_backend!r}; "
@@ -82,7 +83,6 @@ class Engine:
         _require_click_backend_parameter(transport)
         self.transport = transport
         self.click_backend = click_backend
-        self.verify_cursor_readback = verify_cursor_readback
         self.receipts: list[StepReceipt] = []
 
     def geometry(self) -> DisplayGeometry:
@@ -103,19 +103,15 @@ class Engine:
 
     def apply(self, operations: tuple[Operation, ...]) -> StepReceipt:
         """Send one action -- one guest process -- and build its receipt."""
-        host_before: tuple[int, int] | None = None
-        host_after: tuple[int, int] | None = None
-        if self.verify_cursor_readback:
-            host_before = self.transport.cursor_position()
+        host_before = self.transport.cursor_position()
         result = self._execute(operations)
-        if self.verify_cursor_readback:
-            host_after = self.transport.cursor_position()
+        host_after = self.transport.cursor_position()
         verified = self._verify(result, host_before, host_after)
         state = result.as_dict()
         state.update(
             {
-                "host_cursor_before": None if host_before is None else list(host_before),
-                "host_cursor_after": None if host_after is None else list(host_after),
+                "host_cursor_before": list(host_before),
+                "host_cursor_after": list(host_after),
                 "cursor_readback_verified": verified,
                 "executed_cursor_delta": [
                     result.cursor_after[0] - result.cursor_before[0],
@@ -178,12 +174,9 @@ class Engine:
     def _verify(
         self,
         result: AtomicExecutionResult,
-        host_before: tuple[int, int] | None,
-        host_after: tuple[int, int] | None,
+        host_before: tuple[int, int],
+        host_after: tuple[int, int],
     ) -> bool:
-        if not self.verify_cursor_readback:
-            return True
-        assert host_before is not None and host_after is not None
         return host_before == result.cursor_before and host_after == result.cursor_after
 
 

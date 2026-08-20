@@ -223,17 +223,11 @@ def test_a_host_guest_cursor_disagreement_fails_the_step():
     assert receipt.atomic_state["ok"] is False
 
 
-def test_readback_verification_can_be_switched_off():
-    class LyingTransport(_BaseTransport):
-        def execute_atomic(self, operations, *, click_backend="x"):
-            return _result(cursor=(9, 9), cursor_before=(7, 7), cursor_after=(9, 9))
-
-    receipt = Engine(LyingTransport(), verify_cursor_readback=False).apply(
-        (ir.move_to(1, 1),)
-    )
-    assert receipt.ok is True
-    assert receipt.host_cursor_before is None and receipt.host_cursor_after is None
-    assert receipt.cursor_readback_verified is True
+def test_readback_verification_cannot_be_switched_off():
+    """It used to be, and the receipt then claimed a check that had not run:
+    ``cursor_readback_verified: true`` beside two ``None`` host cursors."""
+    with pytest.raises(TypeError):
+        Engine(_BaseTransport(), verify_cursor_readback=False)
 
 
 def test_a_guest_side_failure_keeps_its_own_failure_kind(recording):
