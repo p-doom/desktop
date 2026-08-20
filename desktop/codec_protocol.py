@@ -140,14 +140,22 @@ def _resolved_signature(func: Callable[..., Any]) -> inspect.Signature:
         quotes -- and that string goes straight into ``describe()``, which IS the
         system prompt.
 
-    The fallback keeps a codec whose annotations cannot be resolved in this scope
-    (a forward reference to something not importable here) describing itself at
-    all, rather than raising.
+    So an annotation that cannot be resolved is an ERROR, not a fallback.  Falling
+    back to the unevaluated signature produced exactly the two defects above and
+    produced them silently: the model was served ``{"type": "string"}`` for an
+    ``int`` parameter and a prompt with quoted annotations in it, and nothing
+    anywhere said so.  A codec that wants to be described must annotate with names
+    resolvable from its own module.
     """
     try:
         return inspect.signature(func, eval_str=True)
-    except (NameError, TypeError, AttributeError):
-        return inspect.signature(func)
+    except (NameError, TypeError, AttributeError) as exc:
+        raise ValueError(
+            f"cannot resolve the annotations of action {func.__name__!r}: {exc}. "
+            f"Every annotation must be resolvable from the codec's own module -- an "
+            f"unresolved one is served to the model as a string-typed parameter and "
+            f"as a quoted annotation in the system prompt."
+        ) from exc
 
 
 def _json_parameters(func: Callable[..., Any]) -> dict[str, Any]:
@@ -272,7 +280,6 @@ class ActionSet:
         subsets: dict[str, list[Callable[..., Any]]] | None = None,
         names: list[str] | None = None,
         multiaction: bool = True,
-        strict: bool = False,
     ) -> None:
         chosen: list[Callable[..., Any]] = list(actions or [])
         if names:
@@ -290,8 +297,10 @@ class ActionSet:
         self.specs: dict[str, ActionSpec] = {
             name: action_spec(func) for name, func in self.functions.items()
         }
+        # Strictness is `parse_calls`' argument, not a property of the action set:
+        # an `ActionSet.strict` attribute existed here and was read by nothing, so
+        # `ActionSet(strict=True)` silently got the tolerant parser.
         self.multiaction = multiaction
-        self.strict = strict
 
     @property
     def handlers(self) -> dict[str, Handler]:

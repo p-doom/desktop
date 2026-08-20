@@ -504,17 +504,20 @@ def test_the_served_tool_types_match_the_declared_annotations():
             assert properties[name]["type"] == _TYPE_JSON[annotation], name
 
 
-def test_an_unresolvable_annotation_falls_back_instead_of_failing():
-    """A forward reference this module cannot resolve must still describe itself."""
+def test_an_unresolvable_annotation_is_refused_rather_than_served_as_a_string():
+    """The fallback that used to cover this served the model a WRONG tool schema.
+
+    A parameter whose annotation cannot be resolved came out typed ``"string"`` in
+    the tool JSON and quoted in the system prompt, with nothing reporting it.
+    """
     action = _codec_with_postponed_annotations(
         "from __future__ import annotations\n"
         "def act(target: SomethingNotImportableHere, count: int = 1):\n"
         "    'Doc.'\n"
         "    return ()\n"
     )
-    (tool,) = ActionSet([action]).to_tool_description()
-    assert tool["parameters"]["properties"]["target"]["type"] == "string"
-    assert "act(" in ActionSet([action]).describe()
+    with pytest.raises(ValueError, match="cannot resolve the annotations"):
+        ActionSet([action])
 
 
 def test_annotation_types_are_derived_when_evaluated_eagerly():
