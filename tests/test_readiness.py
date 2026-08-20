@@ -248,12 +248,16 @@ def test_the_wait_honours_the_initial_delay_before_polling(fast_clock):
     assert calls == [130.0]
 
 
-def test_a_slow_vm_times_out_by_returning_the_last_frame(fast_clock):
-    """``NOT_READY`` at timeout means "the VM was slow", which is not an error."""
-    result = wait_for_screenshot_ready(
-        lambda: _flat(0), initial_delay_s=0.0, timeout_s=20.0, poll_s=5.0
-    )
-    assert result == _flat(0)
+def test_a_slow_vm_raises_at_timeout_rather_than_handing_back_a_black_frame(fast_clock):
+    """The frame a ``NOT_READY`` timeout would return IS the black framebuffer.
+
+    Returning it puts the exact frame this module exists to reject into the caller's
+    hands, with the same type and no flag to tell it apart from a ready one.
+    """
+    with pytest.raises(TimeoutError, match="never became ready"):
+        wait_for_screenshot_ready(
+            lambda: _flat(0), initial_delay_s=0.0, timeout_s=20.0, poll_s=5.0
+        )
 
 
 def test_a_broken_guest_agent_raises_at_timeout_rather_than_returning_junk(fast_clock):
@@ -352,9 +356,8 @@ def test_one_malformed_answer_is_ridden_out(fast_clock):
 def test_a_not_ready_frame_resets_the_structural_streak(fast_clock):
     """Only CONSECUTIVE structural answers count.
 
-    Alternating invalid/dark frames must poll to the timeout -- and end as a plain
-    slow-VM timeout, which returns the last frame rather than raising, because the
-    final observation was ``NOT_READY``.
+    Alternating invalid/dark frames must poll all the way to the timeout instead of
+    giving up at the third invalid one.
     """
     calls = []
 
@@ -362,10 +365,8 @@ def test_a_not_ready_frame_resets_the_structural_streak(fast_clock):
         calls.append(1)
         return b"not-an-image" if len(calls) % 2 else _flat(0)
 
-    result = wait_for_screenshot_ready(
-        fetch, initial_delay_s=0.0, timeout_s=60.0, poll_s=5.0
-    )
-    assert result == _flat(0)
+    with pytest.raises(TimeoutError, match="never became ready"):
+        wait_for_screenshot_ready(fetch, initial_delay_s=0.0, timeout_s=60.0, poll_s=5.0)
     assert len(calls) > R.DESKTOP_READY_STRUCTURAL_TOLERANCE
     assert fast_clock["now"] >= 60.0
 
@@ -433,10 +434,8 @@ def test_the_deadline_is_enforced_in_exactly_one_place(fast_clock):
         fast_clock["now"] += 60.0
         return _flat(0)
 
-    result = wait_for_screenshot_ready(
-        fetch, initial_delay_s=0.0, timeout_s=20.0, poll_s=5.0
-    )
-    assert result == _flat(0)
+    with pytest.raises(TimeoutError, match="never became ready"):
+        wait_for_screenshot_ready(fetch, initial_delay_s=0.0, timeout_s=20.0, poll_s=5.0)
     assert fast_clock["sleeps"] == [0.0]
 
 
@@ -504,10 +503,11 @@ def test_the_async_wait_bounds_each_observation_request(fast_async_clock):
     )
 
 
-def test_a_slow_vm_times_out_by_returning_the_last_observation(fast_async_clock):
+def test_a_slow_vm_raises_at_the_async_timeout_too(fast_async_clock):
+    """Both entry points must refuse to hand back the black framebuffer."""
     observer = _Observer([_flat(0)])
-    obs = asyncio.run(R.wait_for_desktop_ready(observer))
-    assert obs["screenshot"] == _flat(0)
+    with pytest.raises(TimeoutError, match="never became ready"):
+        asyncio.run(R.wait_for_desktop_ready(observer))
     assert fast_async_clock["now"] >= R.DESKTOP_READY_TIMEOUT_S
 
 

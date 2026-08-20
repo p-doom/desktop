@@ -163,8 +163,7 @@ def wait_for_screenshot_ready(
         elapsed = time.monotonic() - started
         if elapsed >= timeout_s:
             _log_wait(f"timed out after {elapsed:.1f}s ({detail})")
-            _raise_for_structural_timeout(status, detail, elapsed)
-            return screenshot
+            _raise_for_timeout(status, detail, elapsed)
         try:
             screenshot = fetch()
         except Exception as exc:
@@ -217,8 +216,7 @@ async def wait_for_desktop_ready(
         remaining_s = DESKTOP_READY_TIMEOUT_S - elapsed_s
         if remaining_s <= 0:
             _log_wait(f"timed out after {elapsed_s:.1f}s ({detail})")
-            _raise_for_structural_timeout(status, detail, elapsed_s)
-            return obs
+            _raise_for_timeout(status, detail, elapsed_s)
 
         obs = await asyncio.to_thread(
             env.observe,
@@ -282,13 +280,18 @@ def _raise_if_structurally_broken(
     )
 
 
-def _raise_for_structural_timeout(
+def _raise_for_timeout(
     status: ScreenshotStatus, detail: str, elapsed_s: float
 ) -> None:
-    """Raise only when waiting longer could never have helped."""
-    suffix = _STRUCTURAL_SUFFIXES.get(status)
-    if suffix is None:
-        return
+    """End a timed-out wait as an error, whatever the last status was.
+
+    ``NOT_READY`` used to return the last frame here, on the reading that a slow VM
+    is not an error.  But the frame it returned was BY CONSTRUCTION dark and flat --
+    the exact black framebuffer this module exists to keep out of a rollout -- and it
+    came back with the same type and no flag, so a caller could not tell it from a
+    ready one.  That is the black-frame carry, reintroduced by the guard against it.
+    """
+    suffix = _STRUCTURAL_SUFFIXES.get(status, "on a desktop that never became ready")
     raise TimeoutError(
         f"desktop readiness timed out {suffix} after {elapsed_s:.1f}s ({detail})"
     )
