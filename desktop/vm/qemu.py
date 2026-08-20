@@ -219,20 +219,30 @@ class QemuRuntime:
         return Path.cwd()
 
     def _pick_accelerator(self) -> str:
-        """KVM when the node has it, TCG when it does not.
+        """KVM, or an error naming the one way to ask for something else.
 
-        Deliberately not an error.  A TCG guest is roughly an order of magnitude
-        slower and is NOT valid for any timing or benchmark-parity measurement,
-        but it is valid for proving that a harness talks to a guest at all, which
-        is most of what a test suite needs.
+        This used to fall back to ``-accel tcg`` with a WARNING.  A TCG guest is
+        roughly an order of magnitude slower and is NOT valid for any timing or
+        benchmark-parity measurement -- and nothing downstream recorded which one
+        was used: ``RuntimeState.accelerator`` is not part of ``state.detail``, so
+        the session metadata a run is audited from never mentioned it.  A parity
+        number produced on a node that quietly lost /dev/kvm was therefore
+        indistinguishable, after the fact, from a real one.
+
+        TCG is still reachable, and still valid for proving a harness talks to a
+        guest at all -- it just has to be asked for, with ``accelerator="tcg"`` or
+        ``DESKTOP_ENV_ACCEL=tcg``.
         """
         if kvm_available():
             return "kvm"
-        _LOG.warning(
-            "/dev/kvm is unavailable; falling back to -accel tcg. This is ~10x "
-            "slower and is not valid for timing or benchmark-parity numbers."
+        raise QemuError(
+            "/dev/kvm is not readable and writable on this node, so this VM cannot "
+            "be accelerated. There is deliberately no automatic -accel tcg "
+            "fallback: TCG is ~10x slower and is not valid for any timing or "
+            "OSWorld-parity number, and it used to be substituted silently. Pass "
+            "accelerator='tcg' (or set DESKTOP_ENV_ACCEL=tcg) to ask for it, or "
+            "schedule onto a node with /dev/kvm."
         )
-        return "tcg"
 
     def _record(self, label: str, seconds: float) -> None:
         self.timings.append((label, seconds))

@@ -115,19 +115,13 @@ def test_kvm_is_chosen_when_the_node_has_it(base_image, monkeypatch):
     assert QemuRuntime(image=base_image).accelerator == "kvm"
 
 
-def test_tcg_is_chosen_when_dev_kvm_is_missing(base_image, monkeypatch):
-    """A node without /dev/kvm is a SLOW node, not a dead one."""
+def test_a_node_without_dev_kvm_is_refused_rather_than_downgraded(base_image, monkeypatch):
+    """TCG used to be substituted silently, and nothing recorded which one ran:
+    ``RuntimeState.accelerator`` is not in ``state.detail``, so a parity number
+    produced on a node that lost /dev/kvm looked exactly like a real one."""
     monkeypatch.setattr(qemu_module, "kvm_available", lambda: False)
-    assert QemuRuntime(image=base_image).accelerator == "tcg"
-
-
-def test_falling_back_to_tcg_warns_that_it_invalidates_timings(
-    base_image, monkeypatch, caplog
-):
-    monkeypatch.setattr(qemu_module, "kvm_available", lambda: False)
-    with caplog.at_level("WARNING", logger="desktop.vm.qemu"):
+    with pytest.raises(QemuError, match="no automatic -accel tcg"):
         QemuRuntime(image=base_image)
-    assert "not valid for timing" in caplog.text
 
 
 @pytest.mark.parametrize("choice", ["kvm", "tcg"])
@@ -676,6 +670,9 @@ def test_a_real_boot_forwards_ports_and_serves_qmp_snapshots(tmp_path, monkeypat
     boot_ports = _free_guest_port_block()
     runtime = QemuRuntime(
         image=disk,
+        # Named, not detected, so this test is node-independent: a blank disk never
+        # answers anyway, so the accelerator does not affect what it proves.
+        accelerator="tcg",
         qemu_binary=qemu_system_binary(),
         qemu_img_binary=binary_img,
         overlay_dir=scratch,
