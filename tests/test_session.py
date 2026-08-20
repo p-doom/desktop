@@ -477,19 +477,6 @@ def test_close_is_idempotent(session):
     session.close()
 
 
-def test_a_scratch_root_outside_the_scheduler_tmpdir_is_refused(tmp_path, monkeypatch):
-    monkeypatch.setenv("SLURM_TMPDIR", str(tmp_path / "scheduler"))
-    (tmp_path / "scheduler").mkdir()
-    session = DesktopSession(
-        FakeRuntime(),
-        scratch_root=tmp_path / "elsewhere",
-        session_id="x",
-        require_single_task=False,
-    )
-    with pytest.raises(SessionError, match="must live below the scheduler TMPDIR"):
-        session.start()
-
-
 def test_gpu_visibility_can_be_forbidden(tmp_path, monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     session = DesktopSession(

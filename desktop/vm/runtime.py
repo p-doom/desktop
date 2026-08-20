@@ -80,6 +80,12 @@ class Runtime(Protocol):
 
     name: str
 
+    #: The clean checkpoint ``DesktopSession`` resets to.  A required member, not
+    #: something a caller probes with ``getattr``: a default here would be a second
+    #: copy of the name that silently disagrees the moment the runtime's own
+    #: changes, and every reset would then restore a checkpoint nobody captured.
+    base_checkpoint: str
+
     def start(self) -> RuntimeState:
         """Boot to the point where ``is_ready`` can succeed."""
         ...

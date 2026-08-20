@@ -202,9 +202,7 @@ class DesktopSession:
     ) -> None:
         self.runtime = runtime
         self.session_id = session_id or task_unique_session_id()
-        self.checkpoint_name = checkpoint_name or getattr(
-            runtime, "base_checkpoint", "desktop_env_base"
-        )
+        self.checkpoint_name = checkpoint_name or runtime.base_checkpoint
         self.require_single_task = require_single_task
         self.forbid_gpu_visibility = forbid_gpu_visibility
         self.transport_timeout_s = float(transport_timeout_s)
@@ -246,25 +244,22 @@ class DesktopSession:
             raise SessionError(f"exactly one scheduler task is required, got {ntasks}")
         root = self._requested_scratch_root
         if root is None:
-            raw = os.environ.get("SLURM_TMPDIR") or os.environ.get("TMPDIR_JOB")
-            if raw:
-                root = Path(raw)
-                self.scratch_source = "scheduler_tmpdir"
-            else:
-                job = _safe_component(
-                    os.environ.get("SLURM_JOB_ID", os.environ.get("JOB_ID", "local")),
-                    fallback="local",
-                )
-                task = _safe_component(os.environ.get("SLURM_PROCID", "0"), fallback="0")
-                root = Path("/tmp") / f"desktop-env-job-{os.getuid()}-{job}-{task}"
-                self.scratch_source = "job_unique_tmp_fallback"
-                self._scratch_root_owned = True
+            # /tmp, not $TMPDIR: Slurm on this cluster runs
+            # ``NamespaceType=namespace/tmpfs`` with ``TmpFS=/tmp``, so /tmp is the
+            # node's real filesystem and the job-unique name below is what keeps two
+            # array tasks apart.  There is deliberately no scheduler-supplied
+            # override: Slurm exports no per-job scratch variable here.
+            job = _safe_component(
+                os.environ.get("SLURM_JOB_ID", os.environ.get("JOB_ID", "local")),
+                fallback="local",
+            )
+            task = _safe_component(os.environ.get("SLURM_PROCID", "0"), fallback="0")
+            root = Path("/tmp") / f"desktop-env-job-{os.getuid()}-{job}-{task}"
+            self.scratch_source = "job_unique_tmp_fallback"
+            self._scratch_root_owned = True
         else:
             self.scratch_source = "explicit"
         root = root.resolve()
-        scheduler_tmp = os.environ.get("SLURM_TMPDIR")
-        if scheduler_tmp and not root.is_relative_to(Path(scheduler_tmp).resolve()):
-            raise SessionError("VM scratch root must live below the scheduler TMPDIR")
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if root.stat().st_uid != os.geteuid():
             raise SessionError("VM scratch root is not owned by this user")
@@ -302,7 +297,11 @@ class DesktopSession:
             )
             self.runtime.ensure_base()
             self._started = True
-            self._write_metadata(state_detail=state.detail, ports=state.ports.as_dict())
+            self._write_metadata(
+                state_detail=state.detail,
+                ports=state.ports.as_dict(),
+                accelerator=state.accelerator,
+            )
         except Exception:
             self.close()
             raise
@@ -490,7 +489,7 @@ class DesktopSession:
         self._outstanding_receipt_sha256 = None
 
     def _write_metadata(
-        self, *, state_detail: dict[str, Any], ports: dict[str, int]
+        self, *, state_detail: dict[str, Any], ports: dict[str, int], accelerator: str
     ) -> None:
         if self.metadata_path is None:
             return
@@ -501,8 +500,13 @@ class DesktopSession:
                 "session_id": self.session_id,
                 "hostname": socket.gethostname(),
                 "pid": os.getpid(),
-                "runtime": getattr(self.runtime, "name", type(self.runtime).__name__),
+                "runtime": self.runtime.name,
                 "runtime_state": state_detail,
+                # Recorded because a TCG guest is not valid for any parity number
+                # and this file is what a run is audited from.  It is not in
+                # ``state_detail``, so without this line the accelerator appeared
+                # nowhere a reader would look.
+                "accelerator": accelerator,
                 "ports": ports,
                 "checkpoint_name": self.checkpoint_name,
                 "scratch": {
