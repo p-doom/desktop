@@ -155,19 +155,24 @@ class OSWorldClient:
         Handed back as text rather than parsed: its schema is the guest
         platform's, not ours, and every consumer so far wanted a different slice
         of it.
+
+        Exactly one accepted shape -- the AT-SPI text the pinned guest sends.  This
+        used to try JSON first and then unwrap whichever of four key spellings
+        (``AT`` / ``at`` / ``accessibility_tree`` / ``tree``) happened to be present,
+        falling back to ``errors="replace"`` twice.  A tree is XML that a consumer
+        parses, so a silently replaced byte is a silently malformed tree, and four
+        accepted spellings means a guest that renames the field keeps "working"
+        while returning the wrong slice.
         """
         status, body = self._request("GET", "/accessibility")
         if status != 200:
             raise GuestAgentError(f"guest /accessibility returned {status}")
         try:
-            payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return body.decode("utf-8", errors="replace")
-        if isinstance(payload, dict):
-            for key in ("AT", "at", "accessibility_tree", "tree"):
-                if key in payload:
-                    return str(payload[key])
-        return body.decode("utf-8", errors="replace")
+            return body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise GuestAgentError(
+                f"guest /accessibility returned {len(body)}B that are not UTF-8: {exc}"
+            ) from exc
 
     def cursor_position(self) -> tuple[int, int]:
         """Where the guest thinks the pointer is, as a two-element JSON array.

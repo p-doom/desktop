@@ -207,22 +207,19 @@ def test_the_accessibility_tree_is_returned_as_text(agent):
     assert agent.accessibility() == "<tree/>"
 
 
-@pytest.mark.parametrize("key", ["AT", "at", "accessibility_tree", "tree"])
-def test_a_wrapped_accessibility_tree_is_unwrapped(agent, key):
-    ROUTES["/accessibility"] = _json_route({key: "<tree/>"})
-    assert agent.accessibility() == "<tree/>"
+def test_a_json_wrapped_accessibility_tree_is_not_unwrapped(agent):
+    """One accepted shape.  Unwrapping any of four key spellings meant a guest that
+    renamed the field kept "working" while returning a different slice."""
+    ROUTES["/accessibility"] = _json_route({"tree": "<tree/>"})
+    assert agent.accessibility() == '{"tree": "<tree/>"}'
 
 
-def test_an_unrecognised_accessibility_object_is_returned_verbatim(agent):
-    ROUTES["/accessibility"] = _json_route({"unexpected": "x"})
-    assert agent.accessibility() == '{"unexpected": "x"}'
-
-
-def test_undecodable_accessibility_bytes_are_replaced_not_raised(agent):
-    """A best-effort decode is right here: the tree is the platform's schema and
-    a mangled character is better than losing the whole tree."""
+def test_undecodable_accessibility_bytes_are_refused(agent):
+    """The tree is XML a consumer parses, so a replaced byte is a malformed tree
+    that looks like a valid one."""
     ROUTES["/accessibility"] = (200, b"<tree>\xff</tree>", "text/xml")
-    assert "�" in agent.accessibility()
+    with pytest.raises(GuestAgentError, match="are not UTF-8"):
+        agent.accessibility()
 
 
 def test_a_non_200_accessibility_is_an_error(agent):
