@@ -150,9 +150,9 @@ def test_an_invalid_pool_config_is_refused(kwargs, message):
 
 
 def test_path_fields_are_coerced_to_paths():
-    config = DesktopPoolConfig(root_dir="/tmp/x", status_dir="/tmp/y")
-    assert isinstance(config.root_dir, Path)
+    config = DesktopPoolConfig(status_dir="/tmp/x", port_lock_dir="/tmp/y")
     assert isinstance(config.status_dir, Path)
+    assert isinstance(config.port_lock_dir, Path)
 
 
 def test_nothing_boots_until_start_is_called(pool_factory):

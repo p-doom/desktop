@@ -283,7 +283,9 @@ class DesktopPoolConfig:
     startup_retry_backoff_s: float = 30.0
     startup_retry_backoff_max_s: float = 300.0
     status_heartbeat_interval_s: float = 10.0
-    root_dir: Path | None = None
+    # No `root_dir` here.  It is `DesktopSessionPool`'s own required argument, and a
+    # config field of the same name was read by nothing: a caller who set it got the
+    # constructor's directory instead, silently.
     status_dir: Path | None = None
     runtime_dir: Path | None = None
     log_runtime_dir: Path | None = None
@@ -292,7 +294,6 @@ class DesktopPoolConfig:
     def __post_init__(self) -> None:
         """Validate pool sizing, timeout, and path fields after construction."""
         for name in (
-            "root_dir",
             "status_dir",
             "runtime_dir",
             "log_runtime_dir",
