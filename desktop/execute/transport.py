@@ -269,11 +269,20 @@ class HttpGuiTransport:
     ) -> None:
         """Update the host-side audit from what the guest actually reported."""
         self.audit.operations.extend(result.operations)
-        self.audit.held_buttons = {
-            button
-            for button, mask in BUTTON_MASKS.items()
-            if result.pointer_button_mask & mask
-        }
+        # -1 is the guest's "final readback never ran" sentinel, not a bitmask:
+        # `-1 & mask` is truthy for every button, so deriving the held set from
+        # it hands the next program an all-held initial mask it then fails
+        # verification against forever.  Empty is not unchecked -- that next
+        # program's initial readback re-verifies the mask against the X server.
+        self.audit.held_buttons = (
+            {
+                button
+                for button, mask in BUTTON_MASKS.items()
+                if result.pointer_button_mask & mask
+            }
+            if result.pointer_button_mask >= 0
+            else set()
+        )
         self.audit.held_keys = expected_keys if result.ok else set()
         for operation in result.operations:
             if operation.kind == "scroll":
