@@ -31,6 +31,7 @@ from .guest_program import (
     InputAudit,
     compile_atomic_guest_program,
     compile_unicode_coalesced_type,
+    HeldStateError,
     expected_atomic_input_state,
     lower_guest_operations,
     pointer_mask_for_buttons,
@@ -303,7 +304,7 @@ class HttpGuiTransport:
     def mouse_down(self, button: str = "left") -> None:
         button = guest_button(button)
         if button in self.audit.held_buttons:
-            raise ExecutionError(f"button already held: {button}")
+            raise HeldStateError(f"button already held: {button}")
         self.execute_pyautogui(f"pyautogui.mouseDown(button={button!r})")
         self.audit.held_buttons.add(button)
         self.audit.operations.append(Operation("mouse_down", (button,)))
@@ -311,7 +312,7 @@ class HttpGuiTransport:
     def mouse_up(self, button: str = "left") -> None:
         button = guest_button(button)
         if button not in self.audit.held_buttons:
-            raise ExecutionError(f"button not held: {button}")
+            raise HeldStateError(f"button not held: {button}")
         self.execute_pyautogui(f"pyautogui.mouseUp(button={button!r})")
         self.audit.held_buttons.remove(button)
         self.audit.operations.append(Operation("mouse_up", (button,)))
@@ -391,14 +392,14 @@ class RecordingTransport:
     def mouse_down(self, button: str = "left") -> None:
         button = guest_button(button)
         if button in self.audit.held_buttons:
-            raise ExecutionError(f"button already held: {button}")
+            raise HeldStateError(f"button already held: {button}")
         self.audit.held_buttons.add(button)
         self.audit.operations.append(Operation("mouse_down", (button,)))
 
     def mouse_up(self, button: str = "left") -> None:
         button = guest_button(button)
         if button not in self.audit.held_buttons:
-            raise ExecutionError(f"button not held: {button}")
+            raise HeldStateError(f"button not held: {button}")
         self.audit.held_buttons.remove(button)
         self.audit.operations.append(Operation("mouse_up", (button,)))
 
@@ -571,7 +572,7 @@ class RecordingTransport:
                     key = str(args[0])
                     held = guest_key(key)
                     if held in self.audit.held_keys:
-                        raise ExecutionError(f"key already held: {held}")
+                        raise HeldStateError(f"key already held: {held}")
                     self.audit.held_keys.add(held)
                     self.audit.operations.append(Operation("key_down", (key,)))
                     primitives.append(
@@ -586,7 +587,7 @@ class RecordingTransport:
                     key = str(args[0])
                     held = guest_key(key)
                     if held not in self.audit.held_keys:
-                        raise ExecutionError(f"key not held: {held}")
+                        raise HeldStateError(f"key not held: {held}")
                     self.audit.held_keys.remove(held)
                     self.audit.operations.append(Operation("key_up", (key,)))
                     primitives.append(
