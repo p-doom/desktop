@@ -212,7 +212,12 @@ class HttpGuiTransport:
                 "atomic guest action failure classification is self-contradictory",
                 raw_payload=payload,
             )
-        if int(payload.get("guest_process_count", -1)) != 1:
+        # The -1 default is load-bearing the other way round from the masks
+        # below: here an ABSENT count must fail this check, so the default is the
+        # failure rather than a substituted reading.  `True` is excluded because
+        # `True == 1`, which would read a JSON `true` as exactly one process.
+        count = payload.get("guest_process_count", -1)
+        if not isinstance(count, int) or isinstance(count, bool) or count != 1:
             fail("atomic action did not use exactly one guest process", raw_payload=payload)
         if payload.get("click_backend") != click_backend:
             fail(

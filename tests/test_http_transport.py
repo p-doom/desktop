@@ -490,6 +490,27 @@ def test_more_than_one_guest_process_is_refused(transport, count):
         _parse(transport, _payload(guest_process_count=count))
 
 
+@pytest.mark.parametrize("count", ["1", "abc", None, [1], 1.0, True])
+def test_a_non_integer_guest_process_count_is_refused(transport, count):
+    """It used to go through a bare ``int()``, so a non-numeric value escaped as a
+    ``ValueError`` carrying no payload instead of a refusal carrying one -- and
+    ``"1"`` was silently coerced into passing the module's central claim.  ``True``
+    is here because ``True == 1``, so a JSON ``true`` would otherwise read as
+    exactly one guest process."""
+    with pytest.raises(ExecutionError, match="exactly one guest process") as caught:
+        _parse(transport, _payload(guest_process_count=count))
+    assert caught.value.evidence["raw_payload"]["guest_process_count"] == count
+
+
+def test_an_absent_guest_process_count_is_refused(transport):
+    """Unlike the masks, the ``-1`` default here is the FAILURE: an absent count
+    must fall through to this check rather than be read as a real count."""
+    payload = _payload()
+    del payload["guest_process_count"]
+    with pytest.raises(ExecutionError, match="exactly one guest process"):
+        _parse(transport, payload)
+
+
 def test_a_drifted_click_backend_is_refused(transport):
     with pytest.raises(ExecutionError, match="click backend drifted") as caught:
         _parse(transport, _payload(click_backend=DIRECT_XTEST_CLICK_BACKEND))
