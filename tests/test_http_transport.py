@@ -549,6 +549,45 @@ def test_missing_optional_evidence_defaults_rather_than_failing(transport):
     assert result.final_pointer_readback == {}
 
 
+MASK_FIELDS = (
+    "pointer_button_mask",
+    "observed_pointer_button_mask",
+    "expected_pointer_button_mask",
+)
+
+
+@pytest.mark.parametrize("name", MASK_FIELDS)
+def test_an_absent_pointer_mask_is_refused_rather_than_defaulted(transport, name):
+    """The masks are REQUIRED, unlike the optional evidence above.
+
+    They used to default to -1, which is the guest's "never read" sentinel: an
+    absent mask became a sentinel nobody reported, on a payload still free to
+    claim ``ok`` -- and the held-button audit then read every button as held with
+    no failure signal anywhere in the receipt.
+    """
+    payload = _payload()
+    del payload[name]
+    with pytest.raises(ExecutionError, match=f"invalid {name}"):
+        _parse(transport, payload)
+
+
+@pytest.mark.parametrize("name", MASK_FIELDS)
+@pytest.mark.parametrize("value", [None, "0", 0.0, True, [0]])
+def test_a_non_integer_pointer_mask_is_refused(transport, name, value):
+    """``True`` is in here on purpose: ``isinstance(True, int)`` holds, so an
+    unguarded read turns ``true`` into 1 -- a left button nobody pressed."""
+    with pytest.raises(ExecutionError, match=f"invalid {name}"):
+        _parse(transport, _payload(**{name: value}))
+
+
+@pytest.mark.parametrize("name", MASK_FIELDS)
+def test_a_reported_minus_one_pointer_mask_is_kept(transport, name):
+    """-1 is legal as a VALUE: ``observed_pointer_button_mask`` is -1 whenever the
+    action dies before its verification readback, so refusing it would refuse real
+    payloads.  Only its ABSENCE is refused."""
+    assert getattr(_parse(transport, _payload(**{name: -1})), name) == -1
+
+
 def test_the_guest_returncode_is_carried_onto_the_result(transport):
     result = _parse(
         transport, _payload(ok=False, error="x", failure_kind="injected"), returncode=1

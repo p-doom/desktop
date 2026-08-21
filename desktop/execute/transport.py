@@ -229,6 +229,17 @@ class HttpGuiTransport:
                 fail(f"atomic guest action returned an invalid {name}", raw_payload=payload)
             return tuple(dict(row) for row in value)
 
+        def mask(name: str) -> int:
+            # -1 is the guest's own "this mask was never read" sentinel and is a
+            # legitimate report -- `observed_pointer_button_mask` is -1 whenever
+            # the action dies before its verification readback.  So the VALUE
+            # stays legal and the ABSENCE must not quietly become it: a defaulted
+            # -1 is a sentinel nobody reported, on a payload free to claim ok.
+            value = payload.get(name)
+            if not isinstance(value, int) or isinstance(value, bool):
+                fail(f"atomic guest action returned an invalid {name}", raw_payload=payload)
+            return int(value)
+
         traced = tuple(
             Operation(str(row["kind"]), tuple(row.get("args", ())))
             for row in records("operations")
@@ -238,13 +249,9 @@ class HttpGuiTransport:
             cursor=cursor,
             cursor_before=cursor_before,
             cursor_after=cursor_after,
-            pointer_button_mask=int(payload.get("pointer_button_mask", -1)),
-            observed_pointer_button_mask=int(
-                payload.get("observed_pointer_button_mask", -1)
-            ),
-            expected_pointer_button_mask=int(
-                payload.get("expected_pointer_button_mask", -1)
-            ),
+            pointer_button_mask=mask("pointer_button_mask"),
+            observed_pointer_button_mask=mask("observed_pointer_button_mask"),
+            expected_pointer_button_mask=mask("expected_pointer_button_mask"),
             guest_process_count=1,
             guest_returncode=int(result.get("returncode") or 0),
             raw_result_marker=markers[0],
