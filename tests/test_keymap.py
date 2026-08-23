@@ -540,6 +540,32 @@ def test_an_unbalanced_release_is_still_rejected():
         )
 
 
+def test_a_held_state_contradiction_is_its_own_class():
+    """The taxonomy a rollout harness reads: this one is the CALLER's fault.
+
+    `ExecutionError` also covers the guest request failing and the wiring being
+    wrong, which are ours. A harness that cannot tell them apart scores a model's
+    unmatched `up(...)` as its own infrastructure failure and nulls the episode.
+    """
+    from desktop import ir
+    from desktop.execute.guest_program import (
+        ExecutionError,
+        HeldStateError,
+        expected_atomic_input_state,
+    )
+
+    assert issubclass(HeldStateError, ExecutionError), "callers catching the base still work"
+    for operations in (
+        (ir.key_up("ShiftLeft"),),
+        (ir.key_down("ctrl"), ir.key_down("ctrl")),
+        (ir.mouse_up("left"),),
+    ):
+        with pytest.raises(HeldStateError):
+            expected_atomic_input_state(
+                operations, initial_buttons=set(), initial_keys=set()
+            )
+
+
 def test_two_genuinely_different_keys_are_still_two_keys():
     from desktop import ir
     from desktop.execute.guest_program import expected_atomic_input_state

@@ -49,6 +49,23 @@ class ExecutionError(RuntimeError):
         self.evidence = evidence
 
 
+class HeldStateError(ExecutionError):
+    """The operations contradict held state: a double press or an unmatched release.
+
+    Separate from its base because the two say opposite things about whose fault the
+    failure is, and a caller has to be able to tell them apart. Every other
+    ``ExecutionError`` reports the guest, the transport or the wiring failing --
+    ``guest request /execute failed``, ``guest action failed``, ``unsupported click
+    backend``. This one is raised host-side, before anything is sent, about an
+    operation sequence the caller composed: the executor worked and refused.
+
+    A rollout harness that cannot distinguish them scores a model's malformed action
+    as its own infrastructure failure, which nulls the episode, drops it from the
+    valid count and marks the whole run `infrastructure_failure` -- a measurement
+    destroyed by the check doing its job.
+    """
+
+
 @dataclass
 class InputAudit:
     """Host-side record of what has been sent to one guest, and what is held."""
@@ -256,26 +273,26 @@ def expected_atomic_input_state(
             # one operation, so the held set is unchanged -- but a drag still
             # cannot start with the button already down.
             if "left" in buttons:
-                raise ExecutionError("button already held: left")
+                raise HeldStateError("button already held: left")
         elif operation.kind == "mouse_down":
             button = guest_button(operation.args[0])
             if button in buttons:
-                raise ExecutionError(f"button already held: {button}")
+                raise HeldStateError(f"button already held: {button}")
             buttons.add(button)
         elif operation.kind == "mouse_up":
             button = guest_button(operation.args[0])
             if button not in buttons:
-                raise ExecutionError(f"button not held: {button}")
+                raise HeldStateError(f"button not held: {button}")
             buttons.remove(button)
         elif operation.kind == "key_down":
             key = guest_key(operation.args[0])
             if key in keys:
-                raise ExecutionError(f"key already held: {key}")
+                raise HeldStateError(f"key already held: {key}")
             keys.add(key)
         elif operation.kind == "key_up":
             key = guest_key(operation.args[0])
             if key not in keys:
-                raise ExecutionError(f"key not held: {key}")
+                raise HeldStateError(f"key not held: {key}")
             keys.remove(key)
     return buttons, keys
 
