@@ -238,6 +238,30 @@ def test_a_guest_side_failure_keeps_its_own_failure_kind(recording):
     assert "boom" in receipt.error
 
 
+def test_a_step_whose_final_readback_never_ran_still_leaves_a_receipt():
+    """The receipt is the authoritative published account of an action, so the
+    step whose final pointer readback never ran is exactly the one that must not
+    lose it -- which is why absorbing the ``-1`` sentinel reports rather than
+    raises.  The raw sentinel reaches the receipt, so it stays measurable."""
+
+    class NoFinalReadbackTransport(_BaseTransport):
+        def execute_atomic(self, operations, *, click_backend="x"):
+            return _result(
+                ok=False,
+                pointer_button_mask=-1,
+                error="final pointer readback failed: RuntimeError: display gone",
+                failure_kind="infrastructure",
+            )
+
+    engine = Engine(NoFinalReadbackTransport())
+    receipt = engine.apply((ir.move_to(1, 2),))
+    assert engine.receipts == [receipt]
+    assert receipt.ok is False
+    assert receipt.failure_kind == "infrastructure"
+    assert "final pointer readback failed" in receipt.error
+    assert receipt.atomic_state["pointer_button_mask"] == -1
+
+
 def test_apply_or_raise_carries_the_receipt_as_evidence(recording):
     engine = Engine(recording)
     with pytest.raises(ExecutionError) as caught:

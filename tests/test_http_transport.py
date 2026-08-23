@@ -626,3 +626,40 @@ def test_the_raw_marker_is_preserved_for_auditing(transport):
 def test_the_result_is_json_safe(transport):
     result = _parse(transport, _payload())
     assert json.loads(json.dumps(result.as_dict()))["ok"] is True
+
+
+def test_the_no_readback_sentinel_is_not_absorbed_as_held_buttons(transport):
+    """``pointer_button_mask`` is -1 when the guest's final readback never ran.
+
+    ``-1 & mask`` is truthy for EVERY button, so deriving the held set from the
+    sentinel holds all three -- and the held set is what the NEXT program is
+    compiled to expect, so every later action fails verification against buttons
+    nobody pressed.  Absorbing it must not RAISE either: ``Engine.apply`` turns a
+    failed action into a receipt, and an exception out of here would delete the
+    receipt for the one step that failed.  The sentinel is not swallowed -- it
+    stays on the result; that it reaches the published receipt is asserted in
+    ``test_engine``.
+    """
+    STATE["routes"]["/execute"] = ok_execute(
+        ATOMIC_RESULT_PREFIX
+        + json.dumps(
+            _payload(
+                ok=False,
+                error="final pointer readback failed: RuntimeError: display gone",
+                failure_kind="infrastructure",
+                pointer_button_mask=-1,
+                final_pointer_readback={"attempted": True, "success": False},
+            )
+        ),
+        returncode=1,
+    )
+    result = transport.execute_atomic((ir.move_to(1, 2),))
+    assert transport.audit.held_buttons == set()
+    assert result.pointer_button_mask == -1
+    assert result.ok is False
+    assert result.failure_kind == "infrastructure"
+
+    follow_up = (ir.move_to(3, 4),)
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(follow_up))
+    transport.execute_atomic(follow_up)
+    assert "_de_expected_initial_mask=0" in sent_programs()[-1]
