@@ -490,6 +490,27 @@ def test_more_than_one_guest_process_is_refused(transport, count):
         _parse(transport, _payload(guest_process_count=count))
 
 
+@pytest.mark.parametrize("count", ["1", "abc", None, [1], 1.0, True])
+def test_a_non_integer_guest_process_count_is_refused(transport, count):
+    """It used to go through a bare ``int()``, so a non-numeric value escaped as a
+    ``ValueError`` carrying no payload instead of a refusal carrying one -- and
+    ``"1"`` was silently coerced into passing the module's central claim.  ``True``
+    is here because ``True == 1``, so a JSON ``true`` would otherwise read as
+    exactly one guest process."""
+    with pytest.raises(ExecutionError, match="exactly one guest process") as caught:
+        _parse(transport, _payload(guest_process_count=count))
+    assert caught.value.evidence["raw_payload"]["guest_process_count"] == count
+
+
+def test_an_absent_guest_process_count_is_refused(transport):
+    """Unlike the masks, the ``-1`` default here is the FAILURE: an absent count
+    must fall through to this check rather than be read as a real count."""
+    payload = _payload()
+    del payload["guest_process_count"]
+    with pytest.raises(ExecutionError, match="exactly one guest process"):
+        _parse(transport, payload)
+
+
 def test_a_drifted_click_backend_is_refused(transport):
     with pytest.raises(ExecutionError, match="click backend drifted") as caught:
         _parse(transport, _payload(click_backend=DIRECT_XTEST_CLICK_BACKEND))
@@ -547,6 +568,45 @@ def test_missing_optional_evidence_defaults_rather_than_failing(transport):
     assert result.ok is True
     assert result.backend_primitives == ()
     assert result.final_pointer_readback == {}
+
+
+MASK_FIELDS = (
+    "pointer_button_mask",
+    "observed_pointer_button_mask",
+    "expected_pointer_button_mask",
+)
+
+
+@pytest.mark.parametrize("name", MASK_FIELDS)
+def test_an_absent_pointer_mask_is_refused_rather_than_defaulted(transport, name):
+    """The masks are REQUIRED, unlike the optional evidence above.
+
+    They used to default to -1, which is the guest's "never read" sentinel: an
+    absent mask became a sentinel nobody reported, on a payload still free to
+    claim ``ok`` -- and the held-button audit then read every button as held with
+    no failure signal anywhere in the receipt.
+    """
+    payload = _payload()
+    del payload[name]
+    with pytest.raises(ExecutionError, match=f"invalid {name}"):
+        _parse(transport, payload)
+
+
+@pytest.mark.parametrize("name", MASK_FIELDS)
+@pytest.mark.parametrize("value", [None, "0", 0.0, True, [0]])
+def test_a_non_integer_pointer_mask_is_refused(transport, name, value):
+    """``True`` is in here on purpose: ``isinstance(True, int)`` holds, so an
+    unguarded read turns ``true`` into 1 -- a left button nobody pressed."""
+    with pytest.raises(ExecutionError, match=f"invalid {name}"):
+        _parse(transport, _payload(**{name: value}))
+
+
+@pytest.mark.parametrize("name", MASK_FIELDS)
+def test_a_reported_minus_one_pointer_mask_is_kept(transport, name):
+    """-1 is legal as a VALUE: ``observed_pointer_button_mask`` is -1 whenever the
+    action dies before its verification readback, so refusing it would refuse real
+    payloads.  Only its ABSENCE is refused."""
+    assert getattr(_parse(transport, _payload(**{name: -1})), name) == -1
 
 
 def test_the_guest_returncode_is_carried_onto_the_result(transport):
