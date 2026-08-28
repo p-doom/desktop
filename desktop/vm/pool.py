@@ -55,7 +55,9 @@ RetireReason = Literal["retired", "failed"]
 #: leave BOTH packages' suites green while routing runs on numbers that stopped
 #: meaning what they say -- measured: renaming ``updated_at`` keeps 969 and 103
 #: passing and makes every backend permanently stale.
-#: ``desktop_fleet/tests/test_pool_status_contract.py`` is what makes it loud.
+#: ``tests/test_pool_status_contract.py`` in p-doom/desktop-fleet is what makes it
+#: loud -- and it now sits across a repository boundary, so it only stays loud
+#: while that repo pins a desktop revision that this comment is true of.
 CONSUMED_STATUS_FIELDS: Final = (
     # routed on
     "ready",
