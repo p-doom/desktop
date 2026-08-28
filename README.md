@@ -88,6 +88,7 @@ record inside each codec, and the resolution context arrives as data through
 | `vm/osworld_client.py` | Four endpoints (`/screenshot`, `/screen_size`, `/execute`, `/accessibility`) plus `/cursor_position`. No dispatch, no keymaps. |
 | `vm/sandbox_protocol.py` | NeMo-Gym's sandbox protocol including `ConnectableProvider`, plus our own Apptainer implementation. |
 | `vm/images/` | Two tiers: KVM (full parity) and non-KVM (no OSWorld parity, ever — see that directory's README). |
+| `vm/image_build.py` | The producer of the guest qcow2 every other module treats as a pinned input: boots the upstream image, installs the grader libraries and tools, verifies them from inside the guest, and publishes the image beside a manifest of what went in. |
 
 ## Provenance
 
