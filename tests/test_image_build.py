@@ -20,6 +20,7 @@ own error handling are in the loop rather than mocked away.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -30,13 +31,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import desktop.vm.image_build as image_build
 from desktop.vm.image_build import (
     AGENT_INSTALLED_MODULES,
     DEBUG_SERVER_CALL,
     GUEST_MODULE_PROBE,
+    GUEST_SCREENSHOT_PATCH,
     GUEST_SERVER_SOURCE,
     GUEST_TOOL_PROBE,
     PRODUCTION_SERVER_CALL,
@@ -53,6 +55,7 @@ from desktop.vm.image_build import (
     render_provision_script,
     render_verification_script,
 )
+from desktop.vm.observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
 
 
 @pytest.fixture
@@ -234,6 +237,63 @@ def test_the_provision_script_rewrites_the_debug_server_call_and_proves_it(confi
     assert script.splitlines()[0] == "set -eux"
 
 
+def _patch_preimage() -> str:
+    lines: list[str] = []
+    in_hunk = False
+    for line in GUEST_SCREENSHOT_PATCH.read_text().splitlines(keepends=True):
+        if line.startswith("@@ "):
+            in_hunk = True
+            continue
+        if in_hunk and line[:1] in {" ", "-"}:
+            lines.append(line[1:])
+    return "".join(lines)
+
+
+def _patch_check(tmp_path, source: str) -> subprocess.CompletedProcess[str]:
+    (tmp_path / "main.py").write_text(source)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    return subprocess.run(
+        ["git", "-C", str(tmp_path), "apply", "--check", str(GUEST_SCREENSHOT_PATCH)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_the_guest_patch_applies_to_its_exact_expected_source_shape(tmp_path):
+    checked = _patch_check(tmp_path, _patch_preimage())
+    assert checked.returncode == 0, checked.stderr
+    applied = subprocess.run(
+        ["git", "-C", str(tmp_path), "apply", str(GUEST_SCREENSHOT_PATCH)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert applied.returncode == 0, applied.stderr
+    source = (tmp_path / "main.py").read_text()
+    assert OBSERVATION_CONTRACT in source
+    assert 'format="JPEG", quality=85, subsampling=2, optimize=False' in source
+    assert 'mimetype="image/jpeg"' in source
+    assert "screenshot.png" not in source
+
+
+def test_the_guest_patch_refuses_a_changed_source_shape(tmp_path):
+    source = _patch_preimage().replace(
+        "screenshot.save(file_path)", "screenshot.save(file_path, format='PNG')"
+    )
+    checked = _patch_check(tmp_path, source)
+    assert checked.returncode != 0
+
+
+def test_the_provision_script_applies_and_checks_the_canonical_guest_patch(config):
+    script = render_provision_script(config)
+    assert "patch --batch --forward --fuzz=0 -p1 -d /home/user/server" in script
+    assert GUEST_SCREENSHOT_PATCH.read_text() in script
+    assert f"grep -qF '{OBSERVATION_CONTRACT}' {GUEST_SERVER_SOURCE}" in script
+    assert "subsampling=2, optimize=False" in script
+    assert 'mimetype="image/jpeg"' in script
+
+
 def test_every_declared_deb_is_checksummed_before_it_is_installed(tmp_path):
     config = DesktopImageBuildConfig(
         upstream=tmp_path / "a.qcow2",
@@ -402,19 +462,19 @@ def _execute(output: str, *, returncode: int = 0, error: str = "") -> tuple:
     return (200, body, "application/json")
 
 
-def _png(fill: int) -> bytes:
+def _jpeg(fill: int) -> bytes:
     buffer = io.BytesIO()
-    Image.new("RGB", (320, 180), (fill, fill, fill)).save(buffer, format="PNG")
+    Image.new("RGB", OBSERVATION_SIZE, (fill, fill, fill)).save(
+        buffer, format="JPEG", quality=85, subsampling=2, optimize=False
+    )
     return buffer.getvalue()
 
 
-def _structured_png() -> bytes:
-    image = Image.new("RGB", (320, 180), (0, 0, 0))
-    for x in range(320):
-        for y in range(90):
-            image.putpixel((x, y), (200, 200, 200))
+def _structured_jpeg() -> bytes:
+    image = Image.new("RGB", OBSERVATION_SIZE, (0, 0, 0))
+    ImageDraw.Draw(image).rectangle((0, 0, 1919, 539), fill=(200, 200, 200))
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    image.save(buffer, format="JPEG", quality=85, subsampling=2, optimize=False)
     return buffer.getvalue()
 
 
@@ -585,7 +645,7 @@ def test_a_black_framebuffer_is_not_a_ready_guest(guest, monkeypatch):
     """A 200 from the agent arrives tens of seconds before the desktop paints."""
     monkeypatch.setattr(image_build.time, "sleep", lambda _: None)
     guest._process = _FakeProcess()
-    ROUTES["/screenshot"] = (200, _png(0), "image/png")
+    ROUTES["/screenshot"] = (200, _jpeg(0), "image/jpeg")
     with pytest.raises(GuestCommandError, match="non_dark_ratio=0.000"):
         guest._wait_for_guest(1.0)
 
@@ -593,7 +653,7 @@ def test_a_black_framebuffer_is_not_a_ready_guest(guest, monkeypatch):
 def test_a_painted_desktop_ends_the_boot_wait(guest, monkeypatch):
     monkeypatch.setattr(image_build.time, "sleep", lambda _: None)
     guest._process = _FakeProcess()
-    ROUTES["/screenshot"] = (200, _structured_png(), "image/png")
+    ROUTES["/screenshot"] = (200, _structured_jpeg(), "image/jpeg")
     guest._wait_for_guest(1.0)
 
 
@@ -700,6 +760,10 @@ def test_the_manifest_records_every_declared_package_and_artifact(config):
     ]
     assert manifest["deliberately_absent"] == list(AGENT_INSTALLED_MODULES)
     assert manifest["guest_server_call"] == PRODUCTION_SERVER_CALL
+    assert manifest["image_domain"] == OBSERVATION_CONTRACT
+    assert manifest["guest_server_patch_sha256"] == hashlib.sha256(
+        GUEST_SCREENSHOT_PATCH.read_bytes()
+    ).hexdigest()
 
 
 def test_the_manifest_carries_the_guest_checks_and_stays_json_serialisable(config):

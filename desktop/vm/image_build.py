@@ -16,6 +16,7 @@ else in this package, so there is no container argv and no bind list.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import time
@@ -25,17 +26,20 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .observation import OBSERVATION_CONTRACT
 from .osworld_client import GuestAgentError, OSWorldClient
 from .pool import allocate_worker_ports, node_port_lock_dir
 from .qemu import QemuError, QmpClient
 from .readiness import ScreenshotStatus, desktop_screenshot_ready
 
 GUEST_SERVER_SOURCE = "/home/user/server/main.py"
+GUEST_SERVER_DIRECTORY = str(Path(GUEST_SERVER_SOURCE).parent)
+GUEST_SCREENSHOT_PATCH = Path(__file__).with_name("images") / "osworld-cursor-jpeg.patch"
 GUEST_SERVER_COMMAND = f"/usr/bin/python {GUEST_SERVER_SOURCE}"
 DEBUG_SERVER_CALL = 'app.run(debug=True, host="0.0.0.0")'
 PRODUCTION_SERVER_CALL = 'app.run(debug=False, host="0.0.0.0")'
 
-APT_PACKAGES = ("pdftk-java", "qpdf", "xdotool")
+APT_PACKAGES = ("patch", "pdftk-java", "qpdf", "xdotool")
 
 PIP_PACKAGES = (
     "PyPDF2==3.0.1",
@@ -164,8 +168,13 @@ def render_provision_script(config: DesktopImageBuildConfig) -> str:
         f"grep -qF '{PRODUCTION_SERVER_CALL}' {GUEST_SERVER_SOURCE}",
         "systemctl stop packagekit.service unattended-upgrades.service || true",
         "retry apt-get update",
-        "retry apt-get install -y --no-install-recommends "
-        + " ".join(config.apt_packages),
+        "retry apt-get install -y --no-install-recommends " + " ".join(config.apt_packages),
+        f"patch --batch --forward --fuzz=0 -p1 -d {GUEST_SERVER_DIRECTORY} <<'PATCH'\n"
+        + GUEST_SCREENSHOT_PATCH.read_text()
+        + "PATCH",
+        f"grep -qF {OBSERVATION_CONTRACT!r} {GUEST_SERVER_SOURCE}",
+        f"grep -qF 'subsampling=2, optimize=False' {GUEST_SERVER_SOURCE}",
+        f"grep -qF 'mimetype=\"image/jpeg\"' {GUEST_SERVER_SOURCE}",
     ]
     for index, artifact in enumerate(config.deb_artifacts):
         local = f"/tmp/desktop_image_{index}.deb"
@@ -336,6 +345,10 @@ def build_manifest(
             "mtime": int(upstream.st_mtime),
         },
         "output": str(config.output),
+        "image_domain": OBSERVATION_CONTRACT,
+        "guest_server_patch_sha256": hashlib.sha256(
+            GUEST_SCREENSHOT_PATCH.read_bytes()
+        ).hexdigest(),
         "guest_server_call": PRODUCTION_SERVER_CALL,
         "apt_packages": list(config.apt_packages),
         "pip_packages": list(config.pip_packages),

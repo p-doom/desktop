@@ -46,7 +46,7 @@ def nonkvm_text() -> str:
 def test_both_definitions_exist_and_are_packaged():
     assert KVM_DEF.is_file() and NONKVM_DEF.is_file() and IMAGES_README.is_file()
     pyproject = (IMAGES_DIR.parent.parent.parent / "pyproject.toml").read_text()
-    assert '"desktop.vm.images" = ["*.def", "*.md"]' in pyproject
+    assert '"desktop.vm.images" = ["*.def", "*.md", "*.patch"]' in pyproject
 
 
 @pytest.mark.parametrize("definition", [KVM_DEF, NONKVM_DEF])

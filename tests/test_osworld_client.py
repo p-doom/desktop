@@ -12,6 +12,7 @@ method's error handling is hand-written and therefore worth checking.
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import threading
@@ -20,7 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from PIL import Image, ImageDraw
 
+from desktop.vm.observation import OBSERVATION_SIZE
 from desktop.vm.osworld_client import (
     GuestAgentError,
     OSWorldClient,
@@ -89,7 +92,39 @@ def agent(agent_server):
     return OSWorldClient(f"http://127.0.0.1:{agent_server.server_port}", timeout_s=5.0)
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+def _jpeg(
+    value: int = 0, *, mode: str = "RGB", size: tuple[int, int] = OBSERVATION_SIZE
+) -> bytes:
+    buffer = io.BytesIO()
+    color: int | tuple[int, int, int] = (
+        (value, value, value) if mode == "RGB" else value
+    )
+    Image.new(mode, size, color).save(
+        buffer, format="JPEG", quality=85, subsampling=2, optimize=False
+    )
+    return buffer.getvalue()
+
+
+JPEG = _jpeg()
+
+
+def _cursor_composited_jpeg() -> bytes:
+    screenshot = Image.new("RGB", OBSERVATION_SIZE, (47, 91, 123))
+    cursor = Image.new("RGBA", (16, 24), (0, 0, 0, 0))
+    ImageDraw.Draw(cursor).polygon(
+        [(1, 1), (1, 20), (6, 15), (11, 23), (14, 20), (9, 12)],
+        fill=(255, 255, 255, 255),
+    )
+    screenshot.paste(cursor, (960, 540), cursor)
+    encoded = io.BytesIO()
+    screenshot.save(
+        encoded, format="JPEG", quality=85, subsampling=2, optimize=False
+    )
+    return encoded.getvalue()
+
+
+def test_the_canonical_pillow_encoder_is_byte_deterministic_for_an_unchanged_cursor_frame():
+    assert _cursor_composited_jpeg() == _cursor_composited_jpeg()
 
 
 def _json_route(payload, status=200):
@@ -101,15 +136,15 @@ def test_a_trailing_slash_in_the_base_url_is_normalised():
     assert OSWorldClient("http://host:5000///").base_url == "http://host:5000"
 
 
-def test_a_screenshot_comes_back_as_undecoded_bytes(agent):
-    ROUTES["/screenshot"] = (200, PNG, "image/png")
+def test_a_screenshot_comes_back_as_its_original_jpeg_bytes(agent):
+    ROUTES["/screenshot"] = (200, JPEG, "image/jpeg")
     body = agent.screenshot()
-    assert body == PNG
+    assert body == JPEG
     assert isinstance(body, bytes)
 
 
 def test_an_empty_screenshot_body_is_an_error(agent):
-    ROUTES["/screenshot"] = (200, b"", "image/png")
+    ROUTES["/screenshot"] = (200, b"", "image/jpeg")
     with pytest.raises(GuestAgentError, match="/screenshot returned 200"):
         agent.screenshot()
 
@@ -124,6 +159,46 @@ def test_an_unreachable_agent_raises_rather_than_hanging():
     client = OSWorldClient("http://127.0.0.1:1", timeout_s=1.0)
     with pytest.raises(GuestAgentError, match="failed"):
         client.screenshot()
+
+
+def test_screenshot_does_not_fetch_screen_size_to_validate_its_contract(agent):
+    ROUTES["/screenshot"] = (200, JPEG, "image/jpeg")
+    assert agent.screenshot() == JPEG
+
+
+@pytest.mark.parametrize(
+    "content_type", ["image/png", "text/plain", "application/octet-stream"]
+)
+def test_a_screenshot_with_the_wrong_mime_is_refused(agent, content_type):
+    ROUTES["/screenshot"] = (200, JPEG, content_type)
+    with pytest.raises(GuestAgentError, match="not image/jpeg"):
+        agent.screenshot()
+
+
+@pytest.mark.parametrize("body", [b"jpeg", b"\xff\xd8jpeg", b"jpeg\xff\xd9"])
+def test_a_screenshot_without_complete_jpeg_framing_is_refused(agent, body):
+    ROUTES["/screenshot"] = (200, body, "image/jpeg")
+    with pytest.raises(GuestAgentError, match="invalid JPEG framing"):
+        agent.screenshot()
+
+
+def test_a_corrupt_jpeg_with_markers_is_refused(agent):
+    ROUTES["/screenshot"] = (200, b"\xff\xd8not-a-jpeg\xff\xd9", "image/jpeg")
+    with pytest.raises(GuestAgentError, match="invalid JPEG"):
+        agent.screenshot()
+
+
+@pytest.mark.parametrize(
+    ("mode", "size", "message"),
+    [
+        ("L", OBSERVATION_SIZE, "requires RGB"),
+        ("RGB", (1920, 1079), r"requires \(1920, 1080\)"),
+    ],
+)
+def test_a_jpeg_outside_the_capture_contract_is_refused(agent, mode, size, message):
+    ROUTES["/screenshot"] = (200, _jpeg(mode=mode, size=size), "image/jpeg")
+    with pytest.raises(GuestAgentError, match=message):
+        agent.screenshot()
 
 
 def test_screen_size_is_parsed(agent):
@@ -253,13 +328,25 @@ def test_a_malformed_cursor_position_is_an_error(agent, payload):
 
 
 def test_wait_ready_returns_once_the_agent_answers_with_a_body(agent):
-    ROUTES["/screenshot"] = (200, PNG, "image/png")
+    ROUTES["/screenshot"] = (200, JPEG, "image/jpeg")
     agent.wait_ready(timeout_s=5.0, poll_s=0.05)
+
+
+def test_wait_ready_does_not_accept_a_noncanonical_screenshot(agent):
+    calls = {"n": 0}
+
+    def changing():
+        calls["n"] += 1
+        return (200, JPEG, "image/png" if calls["n"] == 1 else "image/jpeg")
+
+    ROUTES["/screenshot"] = changing
+    agent.wait_ready(timeout_s=5.0, poll_s=0.05)
+    assert calls["n"] == 2
 
 
 def test_wait_ready_keeps_polling_a_200_with_an_empty_body(agent):
     """A 200 with no body is an agent that is up without an X server behind it."""
-    ROUTES["/screenshot"] = (200, b"", "image/png")
+    ROUTES["/screenshot"] = (200, b"", "image/jpeg")
     with pytest.raises(TimeoutError, match="not ready"):
         agent.wait_ready(timeout_s=0.4, poll_s=0.05)
 
@@ -271,7 +358,7 @@ def test_wait_ready_becomes_ready_after_a_few_failures(agent):
         calls["n"] += 1
         if calls["n"] < 3:
             return (500, b"", "text/plain")
-        return (200, PNG, "image/png")
+        return (200, JPEG, "image/jpeg")
 
     ROUTES["/screenshot"] = flaky
     agent.wait_ready(timeout_s=5.0, poll_s=0.05)
@@ -289,24 +376,25 @@ def test_settled_with_zero_delays_is_exactly_one_screenshot(agent):
 
     def counting():
         calls["n"] += 1
-        return (200, PNG, "image/png")
+        return (200, JPEG, "image/jpeg")
 
     ROUTES["/screenshot"] = counting
-    assert agent.screenshot_settled() == PNG
+    assert agent.screenshot_settled() == JPEG
     assert calls["n"] == 1
 
 
 def test_settled_returns_as_soon_as_two_frames_match(agent):
-    frames = [PNG, PNG + b"a", PNG + b"b", PNG + b"b", PNG + b"c"]
+    settled = _jpeg(128)
+    frames = [_jpeg(0), _jpeg(64), settled, settled, _jpeg(192)]
     calls = {"n": 0}
 
     def changing():
         body = frames[min(calls["n"], len(frames) - 1)]
         calls["n"] += 1
-        return (200, body, "image/png")
+        return (200, body, "image/jpeg")
 
     ROUTES["/screenshot"] = changing
-    assert agent.screenshot_settled(stability_timeout_s=5.0, poll_s=0.01) == PNG + b"b"
+    assert agent.screenshot_settled(stability_timeout_s=5.0, poll_s=0.01) == settled
 
 
 def test_settled_returns_the_last_frame_when_the_desktop_never_stops_moving(agent):
@@ -315,18 +403,18 @@ def test_settled_returns_the_last_frame_when_the_desktop_never_stops_moving(agen
 
     def always_changing():
         calls["n"] += 1
-        return (200, PNG + str(calls["n"]).encode(), "image/png")
+        return (200, _jpeg(calls["n"] * 20), "image/jpeg")
 
     ROUTES["/screenshot"] = always_changing
     body = agent.screenshot_settled(stability_timeout_s=0.3, poll_s=0.01)
-    assert body.startswith(PNG)
+    assert body.startswith(b"\xff\xd8")
     assert calls["n"] > 2
 
 
 def test_settled_honours_the_minimum_delay(agent):
     import time
 
-    ROUTES["/screenshot"] = (200, PNG, "image/png")
+    ROUTES["/screenshot"] = (200, JPEG, "image/jpeg")
     started = time.monotonic()
     agent.screenshot_settled(min_delay_s=0.2)
     assert time.monotonic() - started >= 0.2

@@ -1,0 +1,112 @@
+--- a/main.py
++++ b/main.py
+@@ -1,3 +1,4 @@
++import io
+ import ctypes
+ import os
+ import platform
+@@ -71,6 +72,7 @@
+ logger = app.logger
+ recording_process = None  # fixme: this is a temporary solution for recording, need to be changed to support multiple-process
+ recording_path = "/tmp/recording.mp4"
++OBSERVATION_CONTRACT = "osworld_cursor_jpeg_q85_420_1920x1080_v1"
+-
+-
++
++
+ @app.route('/setup/execute', methods=['POST'])
+@@ -262,75 +264,22 @@
+-
++
+ @app.route('/screenshot', methods=['GET'])
+ def capture_screen_with_cursor():
+-    # fixme: when running on virtual machines, the cursor is not captured, don't know why
+-
+-    file_path = os.path.join(os.path.dirname(__file__), "screenshots", "screenshot.png")
+-    user_platform = platform.system()
+-
+-    # Ensure the screenshots directory exists
+-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+-
+-    # fixme: This is a temporary fix for the cursor not being captured on Windows and Linux
+-    if user_platform == "Windows":
+-        def get_cursor():
+-            hcursor = win32gui.GetCursorInfo()[1]
+-            hdc = win32ui.CreateDCFromHandle(win32gui.GetDC(0))
+-            hbmp = win32ui.CreateBitmap()
+-            hbmp.CreateCompatibleBitmap(hdc, 36, 36)
+-            hdc = hdc.CreateCompatibleDC()
+-            hdc.SelectObject(hbmp)
+-            hdc.DrawIcon((0,0), hcursor)
+-
+-            bmpinfo = hbmp.GetInfo()
+-            bmpstr = hbmp.GetBitmapBits(True)
+-            cursor = Image.frombuffer('RGB', (bmpinfo['bmWidth'], bmpinfo['bmHeight']), bmpstr, 'raw', 'BGRX', 0, 1).convert("RGBA")
+-
+-            win32gui.DestroyIcon(hcursor)
+-            win32gui.DeleteObject(hbmp.GetHandle())
+-            hdc.DeleteDC()
+-
+-            pixdata = cursor.load()
+-
+-            width, height = cursor.size
+-            for y in range(height):
+-                for x in range(width):
+-                    if pixdata[x, y] == (0, 0, 0, 255):
+-                        pixdata[x, y] = (0, 0, 0, 0)
+-
+-            hotspot = win32gui.GetIconInfo(hcursor)[1:3]
+-
+-            return (cursor, hotspot)
+-
+-        ratio = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100
+-
+-        img = ImageGrab.grab(bbox=None, include_layered_windows=True)
+-
+-        try:
+-            cursor, (hotspotx, hotspoty) = get_cursor()
+-
+-            pos_win = win32gui.GetCursorPos()
+-            pos = (round(pos_win[0]*ratio - hotspotx), round(pos_win[1]*ratio - hotspoty))
+-
+-            img.paste(cursor, pos, cursor)
+-        except Exception as e:
+-            logger.warning(f"Failed to capture cursor on Windows, screenshot will not have a cursor. Error: {e}")
+-
+-        img.save(file_path)
+-    elif user_platform == "Linux":
+-        with Xcursor() as cursor_obj:
+-            imgarray = cursor_obj.getCursorImageArrayFast()
+-            cursor_img = Image.fromarray(imgarray)
+-            screenshot = pyautogui.screenshot()
+-            cursor_x, cursor_y = pyautogui.position()
+-            screenshot.paste(cursor_img, (cursor_x, cursor_y), cursor_img)
+-            screenshot.save(file_path)
+-    elif user_platform == "Darwin":  # (Mac OS)
+-        # Use the screencapture utility to capture the screen with the cursor
+-        subprocess.run(["screencapture", "-C", file_path])
+-    else:
+-        logger.warning(f"The platform you're using ({user_platform}) is not currently supported")
+-
+-    return send_file(file_path, mimetype='image/png')
++    with Xcursor() as cursor_obj:
++        cursor_img = Image.fromarray(cursor_obj.getCursorImageArrayFast())
++        screenshot = pyautogui.screenshot()
++        cursor_x, cursor_y = pyautogui.position()
++        screenshot.paste(cursor_img, (cursor_x, cursor_y), cursor_img)
++    screenshot = screenshot.convert("RGB")
++    if screenshot.size != (1920, 1080):
++        raise RuntimeError(
++            f"{OBSERVATION_CONTRACT} requires a 1920x1080 desktop, got {screenshot.size}"
++        )
++    encoded = io.BytesIO()
++    screenshot.save(
++        encoded, format="JPEG", quality=85, subsampling=2, optimize=False
++    )
++    encoded.seek(0)
++    return send_file(encoded, mimetype="image/jpeg")
+-
+-
++
++
+ def _has_active_terminal(desktop: Accessible) -> bool:
