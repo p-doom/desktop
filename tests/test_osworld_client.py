@@ -13,12 +13,19 @@ method's error handling is hand-written and therefore worth checking.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
-from desktop.vm.osworld_client import GuestAgentError, OSWorldClient
+from desktop.vm.osworld_client import (
+    GuestAgentError,
+    OSWorldClient,
+    _decode_detached_result,
+)
 
 #: What the fake agent should answer, per path.  Mutated per test.
 ROUTES: dict = {}
@@ -323,3 +330,233 @@ def test_settled_honours_the_minimum_delay(agent):
     started = time.monotonic()
     agent.screenshot_settled(min_delay_s=0.2)
     assert time.monotonic() - started >= 0.2
+
+
+# ``write_file`` and ``execute_detached`` are almost entirely program text: one
+# Python one-liner and three POSIX shell scripts.  An agent that recorded the
+# argv would assert that this module composed the strings it meant to compose and
+# nothing about whether they work, so the fake below shells out for real and the
+# guest's filesystem is this host's.
+
+#: Reject the next N ``/execute`` calls with a 503, standing in for the guest
+#: agent restarting under a command.  Reset per test by the fixture.
+AGENT_FAULTS: dict = {"reject_next": 0}
+#: Every request body the executing agent accepted, in order.
+AGENT_CALLS: list = []
+
+
+class _ExecutingHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+        if AGENT_FAULTS["reject_next"] > 0:
+            AGENT_FAULTS["reject_next"] -= 1
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        AGENT_CALLS.append(body)
+        assert body["shell"] is False, "the agent is never asked for a shell"
+        done = subprocess.run(body["command"], capture_output=True, text=True)
+        payload = json.dumps(
+            {
+                "status": "success" if done.returncode == 0 else "error",
+                "returncode": done.returncode,
+                "output": done.stdout,
+                "error": done.stderr,
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@pytest.fixture(scope="module")
+def executing_agent_server():
+    class _Server(ThreadingHTTPServer):
+        daemon_threads = True
+
+    server = _Server(("127.0.0.1", 0), _ExecutingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def executing_agent(executing_agent_server):
+    AGENT_FAULTS["reject_next"] = 0
+    AGENT_CALLS.clear()
+    return OSWorldClient(
+        f"http://127.0.0.1:{executing_agent_server.server_port}", timeout_s=30.0
+    )
+
+
+def test_a_pushed_file_arrives_byte_for_byte(executing_agent, tmp_path):
+    """Bytes that are not text and not valid UTF-8: the payload crosses as base64
+    precisely so nothing on either side interprets it."""
+    target = tmp_path / "payload.bin"
+    content = bytes(range(256)) + b"\n'\"\\ \x00 end"
+    executing_agent.write_file(str(target), content)
+    assert target.read_bytes() == content
+
+
+def test_a_pushed_file_is_never_program_text_the_guest_could_run(
+    executing_agent, tmp_path
+):
+    target = tmp_path / "quoted.txt"
+    dangerous = b"#!/bin/sh\nshutdown --now\n"
+    executing_agent.write_file(str(target), dangerous)
+    assert target.read_bytes() == dangerous
+    command = AGENT_CALLS[-1]["command"]
+    assert command[:2] == ["python3", "-c"]
+    # The content rides as base64 inside the program, so no byte of it is ever
+    # shell or Python syntax.
+    assert "shutdown" not in command[2]
+
+
+def test_a_relative_guest_path_is_refused(executing_agent):
+    with pytest.raises(ValueError, match="must be absolute"):
+        executing_agent.write_file("relative/path.txt", b"x")
+    assert AGENT_CALLS == [], "a refused path must not reach the guest"
+
+
+def test_a_file_too_large_for_one_argv_element_is_refused(executing_agent, tmp_path):
+    with pytest.raises(ValueError, match="do not fit in one guest argv element"):
+        executing_agent.write_file(str(tmp_path / "huge.bin"), b"x" * 99_000)
+    assert AGENT_CALLS == []
+
+
+def test_the_largest_permitted_file_really_reaches_the_guest(executing_agent, tmp_path):
+    """The cap is the kernel's own ``MAX_ARG_STRLEN``, so the size just under it
+    has to work: a cap picked with margin to spare would pass the refusal test
+    above while refusing files the transport can carry."""
+    target = tmp_path / "big.bin"
+    content = b"x" * 97_000
+    executing_agent.write_file(str(target), content)
+    assert target.read_bytes() == content
+
+
+def test_a_missing_parent_directory_is_reported_rather_than_created(
+    executing_agent, tmp_path
+):
+    """A caller that named a path whose directory does not exist named the wrong
+    path; creating it silently is guessing."""
+    with pytest.raises(GuestAgentError, match="guest command failed"):
+        executing_agent.write_file(str(tmp_path / "absent" / "f.txt"), b"x")
+    assert not (tmp_path / "absent").exists()
+
+
+def test_a_detached_command_returns_its_code_and_both_streams(executing_agent):
+    result = executing_agent.execute_detached(
+        ["sh", "-c", "printf to-out; printf to-err >&2; exit 3"], timeout_s=20.0
+    )
+    assert result.returncode == 3
+    assert result.stdout == "to-out"
+    assert result.stderr == "to-err"
+
+
+def test_a_detached_command_does_not_wait_for_a_survivor_it_spawned(executing_agent):
+    """The whole reason this exists.  The agent runs a command as a child and
+    holds its pipes, so a daemon that inherits them keeps ``/execute`` blocked
+    long after the command exited -- here for the five seconds of the ``sleep``.
+    Redirecting the guest's stdio to files is what breaks that hold."""
+    started = time.monotonic()
+    result = executing_agent.execute_detached(
+        ["sh", "-c", "sleep 5 & echo started"], timeout_s=30.0
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0
+    assert result.stdout.strip() == "started"
+    assert elapsed < 4.0, f"a survivor held the call for {elapsed:.1f}s"
+
+
+def test_a_detached_command_that_overruns_its_timeout_raises_and_cleans_up(
+    executing_agent,
+):
+    with pytest.raises(TimeoutError, match="did not finish within"):
+        executing_agent.execute_detached(["sleep", "5"], timeout_s=0.5)
+    base = AGENT_CALLS[0]["command"][4]
+    for suffix in (".pid", ".rc", ".out", ".err"):
+        assert not Path(base + suffix).exists(), f"{suffix} survived the timeout"
+    discard = AGENT_CALLS[-1]["command"]
+    assert discard[2].startswith("base=$1\nif [ -n \"$2\" ]; then kill")
+    assert discard[5].isdigit(), "a timeout must discard with the pid, to kill it"
+
+
+def test_a_finished_detached_command_is_discarded_without_a_kill(executing_agent):
+    executing_agent.execute_detached(["true"], timeout_s=20.0)
+    discard = AGENT_CALLS[-1]["command"]
+    assert discard[2].startswith("base=$1\nif [ -n \"$2\" ]; then kill")
+    assert discard[5] == "", "nothing is left to kill, so nothing may be killed"
+
+
+def test_the_environment_reaches_the_command(executing_agent):
+    result = executing_agent.execute_detached(
+        ["sh", "-c", 'printf %s "$DESKTOP_TEST_TOKEN"'],
+        timeout_s=20.0,
+        env={"DESKTOP_TEST_TOKEN": "a value with spaces"},
+    )
+    assert result.stdout == "a value with spaces"
+
+
+def test_an_environment_name_containing_an_equals_sign_is_refused(executing_agent):
+    """``env`` splits on the FIRST ``=``, so ``{"A=B": "c"}`` would silently set
+    ``A`` to ``B=c`` instead of failing."""
+    with pytest.raises(ValueError, match="invalid guest command environment name"):
+        executing_agent.execute_detached(["true"], timeout_s=5.0, env={"A=B": "c"})
+    assert AGENT_CALLS == []
+
+
+@pytest.mark.parametrize("argv", [[], [""], ["ok", ""]])
+def test_an_empty_argv_element_is_refused(executing_agent, argv):
+    with pytest.raises(ValueError, match="at least one non-empty string"):
+        executing_agent.execute_detached(argv, timeout_s=5.0)
+
+
+@pytest.mark.parametrize("timeout_s", [0.0, -1.0])
+def test_a_non_positive_detached_timeout_is_refused(executing_agent, timeout_s):
+    with pytest.raises(ValueError, match="timeout_s must be positive"):
+        executing_agent.execute_detached(["true"], timeout_s=timeout_s)
+
+
+def test_a_detached_command_survives_a_restart_of_the_guest_agent(executing_agent):
+    """A guest agent restart takes every open connection with it and answers
+    again within seconds; each of the three control calls is idempotent so that
+    the command underneath is unaffected."""
+    AGENT_FAULTS["reject_next"] = 2
+    result = executing_agent.execute_detached(["echo", "still here"], timeout_s=20.0)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "still here"
+    assert AGENT_FAULTS["reject_next"] == 0
+
+
+def test_a_guest_channel_that_never_answers_gives_up(executing_agent, monkeypatch):
+    """Eight attempts, not forever.  The backoff is flattened because the count
+    and the give-up are under test, not the wall-clock of the sleeps."""
+    import desktop.vm.osworld_client as client_module
+
+    monkeypatch.setattr(client_module, "_DETACHED_RETRY_BACKOFF_S", 0.0)
+    AGENT_FAULTS["reject_next"] = 8
+    with pytest.raises(GuestAgentError, match="channel failed 8 times"):
+        executing_agent.execute_detached(["true"], timeout_s=20.0)
+    assert AGENT_FAULTS["reject_next"] == 0, "it must have used every attempt"
+
+
+@pytest.mark.parametrize(
+    "output", ["", "0\n", "0\nYQ==\n\nextra\n", "not-a-code\nYQ==\n\n"]
+)
+def test_a_malformed_detached_result_is_refused(output):
+    """Three lines, the first an exit code.  Anything else is a guest that
+    answered something other than the collect script's output."""
+    with pytest.raises(GuestAgentError, match="invalid detached guest command result"):
+        _decode_detached_result({"returncode": 0, "output": output})

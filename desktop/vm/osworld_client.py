@@ -20,18 +20,80 @@ HTTP is ``urllib.request``: no ``requests``, no session object, no dependency.
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import json
 import logging
 import time
 import urllib.error
 import urllib.request
+import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 _LOG = logging.getLogger("desktop.vm.osworld_client")
 
+#: Linux caps ONE argv element at ``MAX_ARG_STRLEN`` (32 pages) at ``execve``, and
+#: a file pushed through ``/execute`` rides base64-encoded inside the single
+#: ``python3 -c`` program.  This is therefore a property of the transport, not a
+#: policy: a larger file is refused rather than being cut short by E2BIG.
+GUEST_PROGRAM_MAX_BYTES = 131072
+
+#: How long one control call of a detached command may take.  It has to exceed
+#: ``_DETACHED_POLL_WINDOW_S``, because a collect call deliberately blocks in the
+#: guest for that long rather than returning immediately and being re-issued.
+_DETACHED_CONTROL_TIMEOUT_S = 30.0
+_DETACHED_POLL_WINDOW_S = 5.0
+_DETACHED_POLL_TICK_S = 0.1
+
+#: A guest agent restart takes every open connection with it and answers again
+#: within seconds; every call below is idempotent so that this is survivable.
+_DETACHED_CALL_ATTEMPTS = 8
+_DETACHED_RETRY_BACKOFF_S = 0.5
+
+_DETACHED_LAUNCH_SOURCE = """\
+base=$1
+shift
+if [ -e "$base.pid" ]; then cat "$base.pid"; exit 0; fi
+( "$@" >"$base.out" 2>"$base.err" </dev/null; echo $? >"$base.rc" ) >/dev/null 2>&1 </dev/null &
+echo $! >"$base.pid"
+cat "$base.pid"
+"""
+
+_DETACHED_COLLECT_SOURCE = f"""\
+base=$1
+ticks=$2
+while [ ! -f "$base.rc" ] && [ "$ticks" -gt 0 ]; do
+    sleep {_DETACHED_POLL_TICK_S}
+    ticks=$((ticks - 1))
+done
+test -f "$base.rc" || exit 1
+cat "$base.rc"
+base64 -w0 "$base.out"
+echo
+base64 -w0 "$base.err"
+echo
+"""
+
+_DETACHED_DISCARD_SOURCE = """\
+base=$1
+if [ -n "$2" ]; then kill "$2" 2>/dev/null; fi
+rm -f "$base.pid" "$base.rc" "$base.out" "$base.err"
+"""
+
 
 class GuestAgentError(RuntimeError):
     """The in-VM agent returned an unusable response, or could not be reached."""
+
+
+@dataclass(frozen=True)
+class GuestCommandResult:
+    """What one argv-based guest command produced."""
+
+    returncode: int
+    stdout: str
+    stderr: str
 
 
 class OSWorldClient:
@@ -149,6 +211,114 @@ class OSWorldClient:
             )
         return result
 
+    def write_file(self, path: str, content: bytes) -> None:
+        """Push bytes to an absolute guest path.
+
+        Over ``/execute`` and base64, so nothing about the content is ever
+        interpreted as program text on either side -- which is what callers that
+        hand-embedded a file into a ``python3 -c`` program had to get right by
+        hand, once per call site.
+
+        The parent directory is NOT created: a caller that named a path whose
+        directory does not exist has named the wrong path.
+        """
+        if not path.startswith("/"):
+            raise ValueError(f"guest file path must be absolute, got {path!r}")
+        program = (
+            "import base64,pathlib;"
+            f"pathlib.Path({path!r}).write_bytes("
+            f"base64.b64decode({base64.b64encode(content).decode('ascii')!r},validate=True))"
+        )
+        if len(program.encode("utf-8")) > GUEST_PROGRAM_MAX_BYTES:
+            raise ValueError(
+                f"{len(content)} bytes do not fit in one guest argv element "
+                f"(limit {GUEST_PROGRAM_MAX_BYTES} bytes of base64 program text)"
+            )
+        self.execute(["python3", "-c", program])
+
+    def execute_detached(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout_s: float,
+        env: Mapping[str, str] | None = None,
+    ) -> GuestCommandResult:
+        """Run an argv in the guest with its stdio redirected to files.
+
+        ``execute`` is the right call for anything short.  This is for a command
+        that may spawn a survivor: the agent runs it as a child and holds its
+        pipes, so a daemon inheriting them keeps the agent's ``/execute`` handler
+        blocked long after the command itself exited.  Here the guest shell
+        redirects to files, backgrounds the command, and this polls for the
+        ``.rc`` file, so nothing the command leaves behind holds a pipe open.
+        """
+        argv = list(argv)
+        if not argv or not all(isinstance(value, str) and value for value in argv):
+            raise ValueError("argv must contain at least one non-empty string")
+        if timeout_s <= 0:
+            raise ValueError("timeout_s must be positive")
+        command_env = dict(env or {})
+        for key, value in command_env.items():
+            # ``env`` splits on the FIRST ``=``, so a key containing one silently
+            # sets a different variable to a different value.
+            if not key or "=" in key or "\x00" in key + value:
+                raise ValueError(f"invalid guest command environment name {key!r}")
+        command = [
+            "env",
+            *(f"{key}={value}" for key, value in sorted(command_env.items())),
+            *argv,
+        ]
+
+        base = f"/tmp/desktop-guest-command-{uuid.uuid4().hex}"
+        launch = self._retry_execute(
+            ["sh", "-c", _DETACHED_LAUNCH_SOURCE, "sh", base, *command]
+        )
+        if launch.get("returncode") != 0:
+            raise GuestAgentError(f"could not start detached guest command: {launch!r}")
+        pid = str(launch.get("output") or "").strip()
+
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = max(deadline - time.monotonic(), 0.0)
+            ticks = int(min(remaining, _DETACHED_POLL_WINDOW_S) / _DETACHED_POLL_TICK_S)
+            collected = self._retry_execute(
+                ["sh", "-c", _DETACHED_COLLECT_SOURCE, "sh", base, str(ticks)]
+            )
+            if collected.get("returncode") == 0:
+                result = _decode_detached_result(collected)
+                self._discard_detached(base, pid="")
+                return result
+            if time.monotonic() >= deadline:
+                self._discard_detached(base, pid=pid)
+                raise TimeoutError(
+                    f"guest command did not finish within {timeout_s:.1f}s: {argv!r}"
+                )
+
+    def _retry_execute(self, argv: list[str]) -> dict[str, Any]:
+        last: GuestAgentError | None = None
+        for attempt in range(_DETACHED_CALL_ATTEMPTS):
+            try:
+                return self.execute(
+                    argv, check=False, timeout_s=_DETACHED_CONTROL_TIMEOUT_S
+                )
+            except GuestAgentError as exc:
+                last = exc
+                if attempt + 1 < _DETACHED_CALL_ATTEMPTS:
+                    time.sleep(_DETACHED_RETRY_BACKOFF_S * (attempt + 1))
+        raise GuestAgentError(
+            f"guest command channel failed {_DETACHED_CALL_ATTEMPTS} times: {last!r}"
+        )
+
+    def _discard_detached(self, base: str, *, pid: str) -> None:
+        # Never allowed to raise: it runs on both the success and the timeout
+        # path, where it would replace the outcome the caller is waiting for.
+        with contextlib.suppress(GuestAgentError):
+            self.execute(
+                ["sh", "-c", _DETACHED_DISCARD_SOURCE, "sh", base, pid],
+                check=False,
+                timeout_s=_DETACHED_CONTROL_TIMEOUT_S,
+            )
+
     def accessibility(self) -> str:
         """The platform accessibility tree as returned by the guest.
 
@@ -231,3 +401,15 @@ class OSWorldClient:
                 return current
             previous = current
         return previous
+
+
+def _decode_detached_result(collected: Mapping[str, Any]) -> GuestCommandResult:
+    lines = str(collected.get("output") or "").splitlines()
+    if len(lines) != 3 or not lines[0].strip().lstrip("-").isdigit():
+        raise GuestAgentError(f"invalid detached guest command result: {collected!r}")
+    returncode, encoded_stdout, encoded_stderr = lines
+    return GuestCommandResult(
+        returncode=int(returncode),
+        stdout=base64.b64decode(encoded_stdout).decode("utf-8", "replace"),
+        stderr=base64.b64decode(encoded_stderr).decode("utf-8", "replace"),
+    )
