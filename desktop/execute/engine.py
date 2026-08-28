@@ -13,18 +13,12 @@ mode a delta-resolving grammar cannot otherwise detect.
 
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..geometry import DisplayGeometry, geometry_from_screen_size
 from ..ir import Operation
-from .guest_program import (
-    CLICK_BACKENDS,
-    PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
-    AtomicExecutionResult,
-    ExecutionError,
-)
+from .guest_program import AtomicExecutionResult, ExecutionError
 from .transport import GuiTransport
 
 
@@ -63,26 +57,14 @@ class StepReceipt:
 class Engine:
     """Applies resolved operations to one guest through one transport."""
 
-    def __init__(
-        self,
-        transport: GuiTransport,
-        *,
-        click_backend: str = PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
-    ) -> None:
+    def __init__(self, transport: GuiTransport) -> None:
         # There is no `verify_cursor_readback=False`.  With it off, `_verify`
         # returned True unconditionally, so the receipt said
         # `cursor_readback_verified: true` while `host_cursor_before/after` were
         # both None -- a receipt asserting a check that provably had not run, which
         # is worse than one that admits it did not.  Nothing outside a single test
         # ever passed False.
-        if click_backend not in CLICK_BACKENDS:
-            raise ExecutionError(
-                f"unsupported click backend: {click_backend!r}; "
-                f"expected one of {sorted(CLICK_BACKENDS)}"
-            )
-        _require_click_backend_parameter(transport)
         self.transport = transport
-        self.click_backend = click_backend
         self.receipts: list[StepReceipt] = []
 
     def geometry(self) -> DisplayGeometry:
@@ -167,9 +149,7 @@ class Engine:
         return self.apply(tuple(codec.compile(text, geometry, cursor)))
 
     def _execute(self, operations: tuple[Operation, ...]) -> AtomicExecutionResult:
-        return self.transport.execute_atomic(
-            operations, click_backend=self.click_backend
-        )
+        return self.transport.execute_atomic(operations)
 
     def _verify(
         self,
@@ -178,36 +158,3 @@ class Engine:
         host_after: tuple[int, int],
     ) -> bool:
         return host_before == result.cursor_before and host_after == result.cursor_after
-
-
-def _require_click_backend_parameter(transport: GuiTransport) -> None:
-    """Refuse a transport whose ``execute_atomic`` cannot receive the backend.
-
-    The engine owns the click backend, so a transport that cannot receive it
-    would make an explicit ``click_backend=`` a silent no-op: the caller asks for
-    one XTest stream and the transport emits whichever one it pinned.
-
-    Decided by inspecting the signature at construction rather than by calling and
-    catching ``TypeError``, which would also swallow a genuine ``TypeError`` raised
-    from *inside* the transport and turn a real bug into a silent retry with
-    different arguments.
-    """
-    try:
-        signature = inspect.signature(transport.execute_atomic)
-    except (TypeError, ValueError) as exc:  # C-implemented or otherwise opaque
-        raise ExecutionError(
-            "transport.execute_atomic has no inspectable signature, so the engine "
-            "cannot confirm it accepts click_backend"
-        ) from exc
-    parameters = signature.parameters
-    if "click_backend" in parameters:
-        return
-    if any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    ):
-        return
-    raise ExecutionError(
-        f"transport.execute_atomic{signature} does not accept click_backend, so "
-        "the engine's click backend would be silently ignored"
-    )

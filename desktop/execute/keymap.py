@@ -5,9 +5,9 @@ emit -- rdev / DOM ``KeyboardEvent.code`` names, computer-use aliases, bare X11
 names -- resolved in the fixed order ``guest_key`` documents, so a trajectory
 recorded under one spelling and replayed under another round-trips.
 
-This module emits ``Operation`` values, never pyautogui code strings.  The one
-place that needs pyautogui source is ``guest_program.py``, which owns that
-translation for the whole package.
+This module emits ``Operation`` values and fixed X11 keysyms.  Guest keycodes are
+resolved from those keysyms at execution time because keycodes belong to the X
+server's active keyboard map.
 """
 
 from __future__ import annotations
@@ -16,17 +16,14 @@ import re
 
 from ..ir import Operation
 
-
-#: Explicit event-name -> guest key name.  Keys are rdev / DOM
-#: ``KeyboardEvent.code`` spellings, values are the pinned guest backend's
-#: (pyautogui's) names.
+#: Explicit event-name -> canonical X11 key name.
 KEY_NAMES: dict[str, str] = {
     # modifiers
     "ControlLeft": "ctrlleft",
     "ControlRight": "ctrlright",
     "ShiftLeft": "shiftleft",
     "ShiftRight": "shiftright",
-    "Alt": "alt",
+    "Alt": "altleft",
     "AltLeft": "altleft",
     "AltGr": "altright",
     "AltRight": "altright",
@@ -69,20 +66,20 @@ KEY_NAMES: dict[str, str] = {
 #: A separate table because the two are matched DIFFERENTLY: ``KEY_NAMES``
 #: exactly, this one on ``.upper()``.  Merging them would make the exact table
 #: case-insensitive, and then a sided name could no longer resolve differently
-#: from a loose one -- an exact ``MetaLeft`` must stay ``winleft`` while a loose
-#: ``META`` means ``win``.
+#: from a loose one -- ``MetaRight`` stays right-sided while ``META`` selects the
+#: canonical left-hand key.
 KEY_ALIASES: dict[str, str] = {
-    "CTRL": "ctrl",
-    "CONTROL": "ctrl",
-    "SHIFT": "shift",
-    "ALT": "alt",
-    "OPTION": "alt",
-    "CMD": "command",
-    "COMMAND": "command",
-    "META": "win",
-    "SUPER": "win",
-    "WIN": "win",
-    "WINDOWS": "win",
+    "CTRL": "ctrlleft",
+    "CONTROL": "ctrlleft",
+    "SHIFT": "shiftleft",
+    "ALT": "altleft",
+    "OPTION": "altleft",
+    "CMD": "winleft",
+    "COMMAND": "winleft",
+    "META": "winleft",
+    "SUPER": "winleft",
+    "WIN": "winleft",
+    "WINDOWS": "winleft",
     "ENTER": "enter",
     "RETURN": "enter",
     "ESC": "esc",
@@ -104,18 +101,49 @@ KEY_ALIASES: dict[str, str] = {
     "END": "end",
 }
 
+
+KEYSYMS: dict[str, int] = {
+    **{chr(code): code for code in range(0x20, 0x7F)},
+    "space": 0x20,
+    "backspace": 0xFF08,
+    "tab": 0xFF09,
+    "enter": 0xFF0D,
+    "pause": 0xFF13,
+    "scrolllock": 0xFF14,
+    "esc": 0xFF1B,
+    "home": 0xFF50,
+    "left": 0xFF51,
+    "up": 0xFF52,
+    "right": 0xFF53,
+    "down": 0xFF54,
+    "pageup": 0xFF55,
+    "pagedown": 0xFF56,
+    "end": 0xFF57,
+    "printscreen": 0xFF61,
+    "insert": 0xFF63,
+    "menu": 0xFF67,
+    "numlock": 0xFF7F,
+    "shiftleft": 0xFFE1,
+    "shiftright": 0xFFE2,
+    "ctrlleft": 0xFFE3,
+    "ctrlright": 0xFFE4,
+    "capslock": 0xFFE5,
+    "altleft": 0xFFE9,
+    "altright": 0xFFEA,
+    "winleft": 0xFFEB,
+    "winright": 0xFFEC,
+    "delete": 0xFFFF,
+    **{f"f{number}": 0xFFBD + number for number in range(1, 25)},
+}
+
+PRESSABLE_KEYS = frozenset(KEYSYMS)
+
 _FUNCTION_KEY = re.compile(r"^F([1-9]|1[0-9]|2[0-4])$")
 
 #: ``KEY_NAMES`` folded to upper case, consulted only after the exact and alias
 #: tables have both missed.
 #:
-#: Without it a differently-cased event name fails SILENTLY: the last-resort
-#: fallback lowercases an unrecognised name, so ``guest_key("comma")`` yields
-#: ``"comma"`` -- which pyautogui does not know, so the keystroke is dropped --
-#: while ``guest_key("Comma")`` yields ``","``.  Folding is a FALLBACK rather
-#: than a replacement for the exact lookup so that a sided name stays
-#: distinguishable from a loose one: ``MetaLeft`` is ``winleft``, ``META`` is
-#: ``win``.
+#: Exact names still win so sided names remain distinct.
 _KEY_NAMES_FOLDED: dict[str, str] = {}
 for _name, _guest_name in KEY_NAMES.items():
     # First declaration wins, so the table stays deterministic if a later entry
@@ -134,38 +162,42 @@ def guest_key(name: str) -> str:
     Resolution order, fixed so that two call sites can never disagree:
 
     1. exact ``KEY_NAMES`` hit (``"Return"`` -> ``"enter"``)
-    2. case-insensitive ``KEY_ALIASES`` hit (``"CTRL"``, ``"cmd"`` -> ``"ctrl"``,
-       ``"command"``)
+    2. case-insensitive ``KEY_ALIASES`` hit (``"CTRL"`` -> ``"ctrlleft"``)
     3. case-insensitive ``KEY_NAMES`` hit (``"comma"`` -> ``","``), so a recorder
        that emits a differently-cased event name still lands on a pressable key
        rather than on a lowercased passthrough the guest ignores
     4. ``F1``..``F24`` (case-insensitive)
     5. ``Key<A>`` -> ``"a"``; ``Num<0>`` / ``Digit<0>`` -> ``"0"``
-    6. otherwise the name lowercased -- which covers a single character, and the
-       guest backend accepts many lowercased X11 names verbatim, so passing
-       through beats raising
+    6. otherwise the name lowercased, which covers a single character
+
+    The resolved name must have a fixed X11 keysym.  Validation happens here so
+    an unsupported key fails before a guest process is dispatched.
     """
     if not isinstance(name, str):
         raise KeymapError(f"key must be a string, got {type(name).__name__}")
     stripped = name.strip()
     if not stripped:
         raise KeymapError("key name is empty")
-    if stripped in KEY_NAMES:
-        return KEY_NAMES[stripped]
     upper = stripped.upper()
-    if upper in KEY_ALIASES:
-        return KEY_ALIASES[upper]
-    if upper in _KEY_NAMES_FOLDED:
-        return _KEY_NAMES_FOLDED[upper]
-    if match := _FUNCTION_KEY.match(upper):
-        return f"f{match.group(1)}"
-    if len(stripped) == 4 and stripped.startswith("Key") and stripped[3].isalpha():
-        return stripped[3].lower()
-    if len(stripped) == 4 and stripped.startswith("Num") and stripped[3].isdigit():
-        return stripped[3]
-    if len(stripped) == 6 and stripped.startswith("Digit") and stripped[5].isdigit():
-        return stripped[5]
-    return stripped.lower()
+    if stripped in KEY_NAMES:
+        resolved = KEY_NAMES[stripped]
+    elif upper in KEY_ALIASES:
+        resolved = KEY_ALIASES[upper]
+    elif upper in _KEY_NAMES_FOLDED:
+        resolved = _KEY_NAMES_FOLDED[upper]
+    elif match := _FUNCTION_KEY.match(upper):
+        resolved = f"f{match.group(1)}"
+    elif len(stripped) == 4 and stripped.startswith("Key") and stripped[3].isalpha():
+        resolved = stripped[3].lower()
+    elif len(stripped) == 4 and stripped.startswith("Num") and stripped[3].isdigit():
+        resolved = stripped[3]
+    elif len(stripped) == 6 and stripped.startswith("Digit") and stripped[5].isdigit():
+        resolved = stripped[5]
+    else:
+        resolved = stripped.lower()
+    if resolved not in KEYSYMS:
+        raise KeymapError(f"unsupported X11 key: {name!r}")
+    return resolved
 
 
 #: The only buttons the guest program can press.  ``BUTTON_MASKS`` in

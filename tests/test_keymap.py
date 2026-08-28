@@ -23,7 +23,9 @@ from desktop.execute.keymap import (
     BUTTON_NUMBERS,
     KEY_ALIASES,
     KEY_NAMES,
+    KEYSYMS,
     POINTER_BUTTONS,
+    PRESSABLE_KEYS,
     KeymapError,
     button_transition,
     guest_button,
@@ -32,7 +34,6 @@ from desktop.execute.keymap import (
     key_press,
     key_transition,
 )
-
 
 
 @pytest.mark.parametrize(
@@ -74,19 +75,19 @@ def test_vocabulary_two_punctuation(name, expected):
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("CTRL", "ctrl"),
-        ("Ctrl", "ctrl"),
-        ("ctrl", "ctrl"),
-        ("CONTROL", "ctrl"),
-        ("CMD", "command"),
-        ("cmd", "command"),
-        ("META", "win"),
-        ("super", "win"),
-        ("WINDOWS", "win"),
+        ("CTRL", "ctrlleft"),
+        ("Ctrl", "ctrlleft"),
+        ("ctrl", "ctrlleft"),
+        ("CONTROL", "ctrlleft"),
+        ("CMD", "winleft"),
+        ("cmd", "winleft"),
+        ("META", "winleft"),
+        ("super", "winleft"),
+        ("WINDOWS", "winleft"),
         ("PAGE_UP", "pageup"),
         ("PAGE_DOWN", "pagedown"),
         ("DEL", "delete"),
-        ("OPTION", "alt"),
+        ("OPTION", "altleft"),
     ],
 )
 def test_vocabulary_two_case_insensitive_aliases(name, expected):
@@ -97,12 +98,16 @@ def test_vocabulary_two_case_insensitive_aliases(name, expected):
     ("name", "expected"),
     [
         ("SPACE", "space"),
-        ("XF86AudioRaiseVolume", "xf86audioraisevolume"),
-        ("Numpad5", "numpad5"),
+        ("XF86AudioRaiseVolume", None),
+        ("Numpad5", None),
     ],
 )
-def test_vocabulary_three_lowercasing(name, expected):
-    assert guest_key(name) == expected
+def test_unrecognised_lowercase_passthroughs_are_rejected(name, expected):
+    if expected is None:
+        with pytest.raises(KeymapError, match="unsupported X11 key"):
+            guest_key(name)
+    else:
+        assert guest_key(name) == expected
 
 
 @pytest.mark.parametrize("character", ["a", "A", "1", "/", "%", "z"])
@@ -116,32 +121,33 @@ def test_a_trajectory_recorded_in_any_vocabulary_round_trips():
     eval_style = ["CTRL", "Digit1"]
     rl_style = ["Ctrl", "a"]
     assert [guest_key(k) for k in rung1_style] == ["ctrlleft", "a"]
-    assert [guest_key(k) for k in eval_style] == ["ctrl", "1"]
-    assert [guest_key(k) for k in rl_style] == ["ctrl", "a"]
+    assert [guest_key(k) for k in eval_style] == ["ctrlleft", "1"]
+    assert [guest_key(k) for k in rl_style] == ["ctrlleft", "a"]
 
 
 def test_resolution_order_is_exact_then_alias_then_function_then_shape():
     # 1. exact KEY_NAMES beats everything: 'Alt' is an exact hit.
-    assert guest_key("Alt") == KEY_NAMES["Alt"] == "alt"
+    assert guest_key("Alt") == KEY_NAMES["Alt"] == "altleft"
     # 2. alias, matched on .upper()
-    assert guest_key("cmd") == KEY_ALIASES["CMD"] == "command"
+    assert guest_key("cmd") == KEY_ALIASES["CMD"] == "winleft"
     # 3. function keys, case-insensitively
     assert guest_key("f5") == guest_key("F5") == "f5"
     assert guest_key("F24") == "f24"
     # 4. Key<X> / Num<N> / Digit<N>
     assert guest_key("KeyB") == "b"
-    # 5. bare lowercase, which is also what a single character gets
+    # 5. a pressable bare lowercase character
     assert guest_key("b") == "b"
-    assert guest_key("Unheard") == "unheard"
+    with pytest.raises(KeymapError, match="unsupported X11 key"):
+        guest_key("Unheard")
 
 
 def test_the_exact_table_wins_over_the_alias_table_for_sided_names():
     """The reason the two tables are not merged: exact matching is what keeps a
     sided name sided."""
     assert guest_key("MetaLeft") == "winleft"
-    assert guest_key("META") == "win"
+    assert guest_key("META") == "winleft"
     assert guest_key("AltRight") == guest_key("AltGr") == "altright"
-    assert guest_key("ALT") == "alt"
+    assert guest_key("ALT") == "altleft"
 
 
 def test_every_case_overlap_between_the_two_tables_agrees():
@@ -242,20 +248,15 @@ def test_the_previously_broken_names_all_resolve_in_any_case(spellings, expected
         assert guest_key(spelling) == expected, spelling
 
 
-def test_case_folding_did_not_flatten_a_sided_name_into_a_loose_one():
-    """The fold is a FALLBACK, so exact and alias lookups still win.
-
-    ``MetaLeft`` must stay the left-hand key while a loose ``META`` stays the
-    generic one; a case-insensitive exact table would have merged them.
-    """
+def test_loose_modifier_aliases_resolve_to_concrete_left_hand_keys():
     assert guest_key("MetaLeft") == "winleft"
     assert guest_key("MetaRight") == "winright"
-    assert guest_key("META") == guest_key("meta") == "win"
+    assert guest_key("META") == guest_key("meta") == "winleft"
     assert guest_key("AltLeft") == "altleft"
     assert guest_key("AltRight") == guest_key("AltGr") == "altright"
-    assert guest_key("ALT") == guest_key("Alt") == "alt"
+    assert guest_key("ALT") == guest_key("Alt") == "altleft"
     assert guest_key("ControlLeft") == "ctrlleft"
-    assert guest_key("CTRL") == guest_key("CONTROL") == "ctrl"
+    assert guest_key("CTRL") == guest_key("CONTROL") == "ctrlleft"
 
 
 def test_the_folded_table_has_no_case_insensitive_collisions():
@@ -274,14 +275,25 @@ def test_the_alias_table_still_takes_precedence_over_the_fold():
         assert guest_key(alias) == expected, alias
 
 
-def test_an_unknown_multicharacter_name_passes_through_lowercased():
-    """DOCUMENTED trade-off, and the asymmetry with ``guest_button`` is
-    deliberate: the guest backend accepts many lowercased X11 names verbatim, so
-    a passthrough beats raising.  The cost is that a TYPO is silent -- 'Retrun'
-    becomes 'retrun', which pyautogui ignores without complaint.
-    """
-    assert guest_key("Retrun") == "retrun"
-    assert guest_key("F25") == "f25"  # past the F1..F24 regex, via the fallback
+def test_an_unknown_multicharacter_name_fails_loudly():
+    for name in ("Retrun", "F25"):
+        with pytest.raises(KeymapError, match="unsupported X11 key"):
+            guest_key(name)
+
+
+def test_every_pressable_key_has_a_fixed_keysym():
+    assert PRESSABLE_KEYS == frozenset(KEYSYMS)
+    assert all(isinstance(keysym, int) and keysym > 0 for keysym in KEYSYMS.values())
+
+
+def test_an_unsupported_key_fails_before_a_guest_program_is_dispatched():
+    from desktop import ir
+    from desktop.execute.guest_program import compile_atomic_guest_program
+
+    with pytest.raises(KeymapError, match="unsupported X11 key"):
+        compile_atomic_guest_program(
+            (ir.key_down("Retrun"),), initial_buttons=set(), initial_keys=set()
+        )
 
 
 @pytest.mark.parametrize("name", ["left", "middle", "right"])
@@ -357,16 +369,23 @@ def test_a_chord_presses_in_order_and_releases_in_reverse():
     """Releasing ctrl before a in ctrl+a delivers a bare 'a' on the pinned guest."""
     operations = key_chord(["CTRL", "KeyA"])
     assert [(op.kind, op.args) for op in operations] == [
-        ("key_down", ("ctrl",)),
+        ("key_down", ("ctrlleft",)),
         ("key_down", ("a",)),
         ("key_up", ("a",)),
-        ("key_up", ("ctrl",)),
+        ("key_up", ("ctrlleft",)),
     ]
 
 
 def test_a_three_key_chord_releases_in_full_reverse_order():
     operations = key_chord(["ctrl", "shift", "KeyT"])
-    assert [op.args[0] for op in operations] == ["ctrl", "shift", "t", "t", "shift", "ctrl"]
+    assert [op.args[0] for op in operations] == [
+        "ctrlleft",
+        "shiftleft",
+        "t",
+        "t",
+        "shiftleft",
+        "ctrlleft",
+    ]
 
 
 def test_a_chord_emits_operations_and_never_pyautogui_source():
@@ -494,7 +513,34 @@ def test_a_cross_spelling_pair_executes_in_the_guest_as_one_key():
     run = run_guest_program((ir.key_down("Return"), ir.key_up("Enter")))
     assert run.returncode == 0, run.stderr
     assert run.payload["ok"] is True, run.payload["error"]
-    assert run.pyautogui_calls == [["keyDown", "enter"], ["keyUp", "enter"]]
+    assert [event["event"] for event in run.payload["x_injection_evidence"]] == [
+        "key_press",
+        "key_release",
+    ]
+
+
+def test_the_guest_reads_back_a_held_key_and_its_release():
+    from desktop import ir
+    from tests.support.guest_runner import run_guest_program
+
+    down = run_guest_program((ir.key_down("ControlLeft"),))
+    assert down.payload["held_keys"] == ["ctrlleft"]
+    up = run_guest_program((ir.key_up("CTRL"),), initial_keys={"ControlLeft"})
+    assert up.payload["held_keys"] == []
+
+
+def test_initial_held_key_mismatch_is_a_verification_failure():
+    from desktop import ir
+    from tests.support.guest_runner import run_guest_program
+
+    run = run_guest_program(
+        (ir.key_up("ControlLeft"),),
+        initial_keys={"ControlLeft"},
+        backend_initial_keys=set(),
+    )
+    assert run.payload["ok"] is False
+    assert run.payload["failure_kind"] == "verification"
+    assert "initial held keycodes" in run.payload["error"]
 
 
 def test_the_recording_double_balances_the_same_pair(recording):
@@ -532,7 +578,7 @@ def test_an_unbalanced_release_is_still_rejected():
     from desktop import ir
     from desktop.execute.guest_program import ExecutionError, expected_atomic_input_state
 
-    with pytest.raises(ExecutionError, match="key not held: shift"):
+    with pytest.raises(ExecutionError, match="key not held: shiftleft"):
         expected_atomic_input_state(
             (ir.key_down("ctrl"), ir.key_up("SHIFT")),
             initial_buttons=set(),
@@ -561,21 +607,19 @@ def test_a_held_state_contradiction_is_its_own_class():
         (ir.mouse_up("left"),),
     ):
         with pytest.raises(HeldStateError):
-            expected_atomic_input_state(
-                operations, initial_buttons=set(), initial_keys=set()
-            )
+            expected_atomic_input_state(operations, initial_buttons=set(), initial_keys=set())
 
 
-def test_two_genuinely_different_keys_are_still_two_keys():
+def test_two_genuinely_different_sided_keys_are_still_two_keys():
     from desktop import ir
     from desktop.execute.guest_program import expected_atomic_input_state
 
     _, keys = expected_atomic_input_state(
-        (ir.key_down("MetaLeft"), ir.key_down("META")),
+        (ir.key_down("MetaLeft"), ir.key_down("MetaRight")),
         initial_buttons=set(),
         initial_keys=set(),
     )
-    assert keys == {"winleft", "win"}
+    assert keys == {"winleft", "winright"}
 
 
 def test_a_malformed_key_name_raises_instead_of_being_tracked():

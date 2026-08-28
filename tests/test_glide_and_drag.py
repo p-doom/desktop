@@ -1,9 +1,8 @@
-"""The ``glide_to`` and ``drag`` lowerings, and drag's self-balancing.
+"""The direct-XTEST ``glide_to`` and ``drag`` paths, and drag's self-balancing.
 
-``glide_to`` must reach ``pyautogui.moveTo(..., duration=)`` -- a sweep, not a
-teleport, because some widgets only respond to the sweep.  ``drag`` must lower to
-press / move / release inside the ONE process, and must record ``zero_extent`` so a
-genuine ``drag(x, y, x, y)`` is distinguishable from a click afterwards.
+``glide_to`` must emit a timed sequence of motion events -- a sweep, not a
+teleport. ``drag`` emits press / motion / release inside one process and records
+``zero_extent`` so a genuine ``drag(x, y, x, y)`` remains distinguishable.
 
 ``expected_atomic_input_state``'s drag branch must be self-balancing: the press
 and the release are both inside the single operation, so the held-button set on
@@ -24,26 +23,28 @@ from desktop.execute.guest_program import (
 from tests.support.guest_runner import run_guest_program
 
 
-
 def test_glide_lowers_to_a_timed_moveto():
     run = run_guest_program((ir.glide_to(700, 400, 0.25),))
     assert run.returncode == 0, run.stderr
-    assert run.pyautogui_calls == [["moveTo", 700, 400, 0.25]]
+    (primitive,) = run.primitives("glide_to")
+    assert primitive["seconds"] == 0.25
+    assert primitive["motion_events"] >= 2
 
 
 def test_glide_duration_is_the_difference_from_move_to():
     """A ``move_to`` teleports; a ``glide_to`` must carry a non-zero duration."""
     glide = run_guest_program((ir.glide_to(700, 400, 0.25),))
     move = run_guest_program((ir.move_to(700, 400),))
-    assert glide.pyautogui_calls[0][3] == 0.25
-    assert move.pyautogui_calls[0][3] == 0.0
-    assert glide.pyautogui_calls[0][:3] == move.pyautogui_calls[0][:3]
+    assert glide.primitives("glide_to")[0]["seconds"] == 0.25
+    assert glide.primitives("glide_to")[0]["motion_events"] > 1
+    assert len(move.payload["x_injection_evidence"]) == 1
+    assert glide.payload["cursor_after"] == move.payload["cursor_after"]
 
 
 def test_glide_records_its_own_primitive_and_seconds():
     run = run_guest_program((ir.glide_to(300, 200, 1.5),))
     (primitive,) = run.primitives("glide_to")
-    assert primitive["call"] == "pyautogui.moveTo(duration=)"
+    assert primitive["backend"] == "python-xlib XTEST"
     assert primitive["seconds"] == 1.5
     assert primitive["requested_position"] == [300, 200]
     assert primitive["clamped"] is False
@@ -56,13 +57,21 @@ def test_glide_clamps_to_the_screen_and_says_so():
     assert primitive["clamped"] is True
     assert primitive["requested_position"] == [5000, 5000]
     assert primitive["cursor_after"] == [1919, 1079]
-    assert run.pyautogui_calls == [["moveTo", 1919, 1079, 0.1]]
+    assert run.payload["x_injection_evidence"][-1]["x"] == 1919
+    assert run.payload["x_injection_evidence"][-1]["y"] == 1079
 
 
-@pytest.mark.parametrize(("given", "expected"), [(-1.0, 0.0), (99.0, 10.0), (10.0, 10.0)])
-def test_glide_seconds_are_clamped_to_the_documented_range(given, expected):
-    run = run_guest_program((ir.Operation("glide_to", (10, 10, given)),))
-    assert run.pyautogui_calls[0][3] == expected
+@pytest.mark.parametrize(
+    ("given", "expected"), [(-1.0, None), (99.0, None), (0.01, 0.01), (10.0, 10.0)]
+)
+def test_glide_seconds_are_validated_without_clamping(given, expected):
+    operation = ir.Operation("glide_to", (10, 10, given))
+    if expected is None:
+        with pytest.raises(ValueError, match="glide seconds"):
+            run_guest_program((operation,))
+    else:
+        run = run_guest_program((operation,))
+        assert run.primitives("glide_to")[0]["seconds"] == expected
 
 
 def test_glide_moves_the_cursor_the_guest_reports_back():
@@ -85,17 +94,11 @@ HELD_STROKE = (ir.mouse_down("left"), ir.glide_to(1200, 700, 0.5), ir.mouse_up("
 
 
 def test_a_held_stroke_keeps_the_timed_move_inside_the_held_button():
-    """In the generated SOURCE: press, then the timed move, then release."""
-    from desktop.execute.guest_program import compile_atomic_guest_program
-
-    source, _ = compile_atomic_guest_program(
-        HELD_STROKE, initial_buttons=set(), initial_keys=set()
-    )
-    assert "pyautogui.moveTo(_tx,_ty,duration=0.5)" in source
-    press = source.index("pyautogui.mouseDown(button='left')")
-    stroke = source.index("duration=0.5")
-    release = source.index("pyautogui.mouseUp(button='left')")
-    assert press < stroke < release
+    run = run_guest_program(HELD_STROKE)
+    phases = [event["phase"] for event in run.payload["x_injection_evidence"]]
+    assert phases[0] == "mouse_down"
+    assert set(phases[1:-1]) == {"glide"}
+    assert phases[-1] == "mouse_up"
 
 
 def test_a_held_stroke_is_not_coalesced_into_a_click():
@@ -110,10 +113,10 @@ def test_a_held_stroke_executes_with_the_button_down_across_the_move():
     run = run_guest_program(HELD_STROKE)
     assert run.returncode == 0, run.stderr
     assert run.payload["ok"] is True, run.payload["error"]
-    assert run.pyautogui_calls == [
-        ["mouseDown", "left"],
-        ["moveTo", 1200, 700, 0.5],
-        ["mouseUp", "left"],
+    assert [event["event"] for event in run.payload["x_injection_evidence"]] == [
+        "button_press",
+        *["motion_notify"] * 30,
+        "button_release",
     ]
     assert run.trace() == [
         ("mouse_down", ["left"]),
@@ -138,39 +141,30 @@ def test_the_recording_double_reproduces_a_held_stroke(recording):
 def test_drag_lowers_to_press_move_release_in_one_process():
     run = run_guest_program((ir.drag(100, 100, 400, 300),))
     assert run.returncode == 0, run.stderr
-    assert run.pyautogui_calls == [
-        ["moveTo", 100, 100, 0.0],
-        ["mouseDown", "left"],
-        ["moveTo", 400, 300, 0.0],
-        ["mouseUp", "left"],
+    assert [event["phase"] for event in run.payload["x_injection_evidence"]] == [
+        "drag_start",
+        "drag_press",
+        "drag_end",
+        "drag_release",
     ]
     assert run.payload["guest_process_count"] == 1
-    assert run.trace() == [
-        ("move_to", [100, 100]),
-        ("mouse_down", ["left"]),
-        ("move_to", [400, 300]),
-        ("mouse_up", ["left"]),
-    ]
+    assert run.trace() == [("drag", [100, 100, 400, 300])]
 
 
 def test_a_zero_extent_drag_still_produces_a_real_press_and_release():
     """The entire reason ``drag`` is its own kind rather than a triple."""
     run = run_guest_program((ir.drag(200, 200, 200, 200),))
-    calls = [call[0] for call in run.pyautogui_calls]
-    assert calls.count("mouseDown") == 1
-    assert calls.count("mouseUp") == 1
-    events = [event for event in run.x_events if event[0] == "fake_input"]
-    press = [event for event in events if event[1] == 4]
-    release = [event for event in events if event[1] == 5]
+    events = run.payload["x_injection_evidence"]
+    press = [event for event in events if event["event"] == "button_press"]
+    release = [event for event in events if event["event"] == "button_release"]
     assert len(press) == 1 and len(release) == 1
 
 
 def test_zero_extent_is_recorded_on_the_release_primitive():
     zero = run_guest_program((ir.drag(5, 5, 5, 5),))
     real = run_guest_program((ir.drag(5, 5, 6, 6),))
-    assert zero.primitives("mouse_up")[0]["zero_extent"] is True
-    assert real.primitives("mouse_up")[0]["zero_extent"] is False
-    assert zero.primitives("mouse_up")[0]["drag"] is True
+    assert zero.primitives("drag")[0]["zero_extent"] is True
+    assert real.primitives("drag")[0]["zero_extent"] is False
 
 
 def test_a_drag_is_not_collapsed_into_a_click_by_the_lowering():
@@ -226,8 +220,8 @@ def test_a_drag_cannot_start_with_left_already_down():
 
 def test_the_guest_emits_equal_numbers_of_downs_and_ups_for_a_drag():
     run = run_guest_program((ir.drag(1, 1, 9, 9), ir.drag(9, 9, 1, 1)))
-    calls = [call[0] for call in run.pyautogui_calls]
-    assert calls.count("mouseDown") == calls.count("mouseUp") == 2
+    events = [event["event"] for event in run.payload["x_injection_evidence"]]
+    assert events.count("button_press") == events.count("button_release") == 2
 
 
 def test_a_drag_after_a_held_press_of_a_different_button_executes():
@@ -339,12 +333,10 @@ def test_the_double_and_the_guest_agree_on_success_and_held_state(name, recordin
     assert result.ok is guest.payload["ok"], name
     assert result.failure_kind == guest.payload["failure_kind"], name
     assert (
-        result.expected_pointer_button_mask
-        == guest.payload["expected_pointer_button_mask"]
+        result.expected_pointer_button_mask == guest.payload["expected_pointer_button_mask"]
     ), name
     assert (
-        result.observed_pointer_button_mask
-        == guest.payload["observed_pointer_button_mask"]
+        result.observed_pointer_button_mask == guest.payload["observed_pointer_button_mask"]
     ), name
 
 
@@ -364,24 +356,21 @@ def test_the_double_and_the_guest_agree_on_the_lowering(name, recording):
 def test_the_invariant_covers_every_kind_the_executor_lowers():
     """The table above must not fall behind ``CANONICAL_KINDS``.
 
-    ``coalesced_type`` is the one exclusion: it needs the fake GTK stack in the
-    guest subprocess, so it has its own test below rather than a table entry.
+    ``coalesced_type`` has its own Unicode-specific test below rather than a table
+    entry.
     """
     from desktop.ir import CANONICAL_KINDS
 
     covered = {
-        operation.kind
-        for operations in CANONICAL_ACTIONS.values()
-        for operation in operations
+        operation.kind for operations in CANONICAL_ACTIONS.values() for operation in operations
     }
     expected = set(CANONICAL_KINDS) - {"coalesced_type"}
     assert expected <= covered, f"uncovered kinds: {sorted(expected - covered)}"
 
 
 def test_the_coalesced_type_kind_also_agrees(recording):
-    """Separate because it needs the fake GTK stack in the guest subprocess."""
     operations = (ir.coalesced_type("héllo ✓"),)
-    guest = run_guest_program(operations, with_gi=True)
+    guest = run_guest_program(operations)
     result = recording.execute_atomic(operations)
     assert [(op.kind, list(op.args)) for op in result.operations] == guest.trace()
     assert result.ok is guest.payload["ok"] is True

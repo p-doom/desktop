@@ -52,10 +52,12 @@ PIP_PACKAGES = (
     "pymupdf==1.25.5",
     "python-docx==1.2.0",
     "python-pptx==1.0.2",
+    "python-xlib==0.33",
 )
 
 GUEST_MODULE_PROBE = (
     "PyPDF2",
+    "Xlib",
     "docx",
     # PyMuPDF's grader-facing import name.
     "fitz",
