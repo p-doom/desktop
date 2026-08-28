@@ -13,12 +13,15 @@ of that inspectable from another process, which is how a multi-node run is
 debugged.
 
 This module owns the ONE host-port allocator: ``QemuRuntime`` refuses to boot
-without a block from it.  Its shape matters -- a *file-locked slot*, not
+without a block from it.  Its shape matters -- a *file-locked port*, not
 ``bind(0)``.  ``bind(0)`` hands out a port that is then closed before QEMU binds
-it, so two simultaneous starts can be handed the same one; an ``flock`` on a slot
-file is held for the lifetime of the lease, spanning the probe and QEMU's own
+it, so two simultaneous starts can be handed the same one; an ``flock`` on a file
+per port is held for the lifetime of the lease, spanning the probe and QEMU's own
 bind, and the allocator additionally probes every port in the block before
-accepting the slot.
+accepting the slot.  ``acquire_port_range`` is that primitive and a worker block
+is one strided use of it, so a caller leasing an unstrided range of its own is
+arbitrated by the same locks rather than by a second allocator that cannot see
+them.
 
 Two properties are what make it exclusive, and both were once wrong: the lock
 namespace has to be node-local and shared by every job on the node
@@ -37,7 +40,7 @@ import threading
 import time
 import traceback
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
@@ -83,27 +86,85 @@ CONSUMED_STATUS_FIELDS: Final = (
 class WorkerPorts:
     """One aligned block of host ports for a single desktop.
 
-    Exactly the four ports ``QemuRuntime`` forwards, and no more.  There is no
+    Four of them are what ``QemuRuntime`` forwards, and no more.  There is no
     QEMU-side VNC port: the runtime boots ``-display none -nographic``, so
     exposing one would mean changing every VM's command line rather than
     allocating a port.
 
-    The stride stays at 10 even though only four ports are used, so ``base + 4 ..
-    base + 9`` is unused headroom and no existing slot's port numbers move.
+    ``base + 4 .. base + stride - 1`` is the rest of the stride, leased and
+    probed like the others and handed out as ``auxiliary`` for host-side services
+    a caller runs beside the VM.  It is part of the block precisely so such a
+    service cannot be given a port some other slot owns.
     """
 
     server: int
     chromium: int
     vnc: int
     vlc: int
+    auxiliary: tuple[int, ...] = ()
+
+    def auxiliary_port(self, index: int = 0) -> int:
+        try:
+            return self.auxiliary[index]
+        except IndexError as exc:
+            raise ValueError(f"no auxiliary worker port at index {index}") from exc
+
+    def all(self) -> tuple[int, ...]:
+        return (self.server, self.chromium, self.vnc, self.vlc, *self.auxiliary)
 
     def as_dict(self) -> dict[str, int]:
+        """The four forwarded ports only: this is the pool status file's schema,
+        which ``desktop_fleet`` reads, and an auxiliary port is not a forward."""
         return {
             "server": self.server,
             "chromium": self.chromium,
             "vnc": self.vnc,
             "vlc": self.vlc,
         }
+
+
+@dataclass
+class PortRangeLease:
+    """An exclusive advisory lease over one contiguous range of TCP ports.
+
+    One lock file per port rather than one per block, so a caller that leases a
+    range of its own choosing -- a hub's app ports, say -- is arbitrated against
+    a desktop block by the ports they share rather than by agreeing on a stride.
+    """
+
+    start: int
+    count: int
+    lock_dir: Path
+    purpose: str
+    _lock_files: tuple[TextIO, ...]
+    _released: bool = False
+
+    @property
+    def ports(self) -> tuple[int, ...]:
+        return tuple(range(self.start, self.start + self.count))
+
+    @property
+    def end(self) -> int:
+        return self.start + self.count - 1
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        for lock_file in reversed(self._lock_files):
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.release()
 
 
 @dataclass
@@ -119,7 +180,7 @@ class PortLease:
     slot: int
     workdir: Path
     logdir: Path
-    _lock_file: TextIO
+    _range_lease: PortRangeLease
     _released: bool = False
 
     def release(self) -> None:
@@ -133,8 +194,7 @@ class PortLease:
         """
         if self._released:
             return
-        fcntl.flock(self._lock_file, fcntl.LOCK_UN)
-        self._lock_file.close()
+        self._range_lease.release()
         self._released = True
         with contextlib.suppress(OSError):
             self.workdir.rmdir()
@@ -167,6 +227,12 @@ PORT_BASE: Final = 20000
 #: to one job, protecting nothing.
 NODE_PORT_LOCK_DIR: Final = "/tmp/desktop-port-locks"
 
+#: The span a CUA-Gym hub's app ports are leased from.  It is NOT clear of this
+#: cluster's ``ip_local_port_range`` (32768-60999) the way ``PORT_BASE``'s span
+#: is, so a hub port above 32768 can still be taken by an outgoing connection's
+#: ephemeral port between the probe and the server's own bind.
+HUB_PORT_RANGE: Final = (30_000, 39_999)
+
 
 def node_port_lock_dir() -> Path:
     """Per-uid, so one user's locks are not another's to take or to break."""
@@ -180,15 +246,145 @@ def ports_for_worker(base: int, worker_id: int, stride: int = 10) -> WorkerPorts
         chromium=start + 1,
         vnc=start + 2,
         vlc=start + 3,
+        auxiliary=tuple(range(start + 4, start + stride)),
     )
-    for port in (ports.server, ports.chromium, ports.vnc, ports.vlc):
+    for port in ports.all():
         if port > 65535:
             raise ValueError(f"worker port {port} exceeds the TCP port range")
     return ports
 
 
-def assert_ports_available(ports: WorkerPorts) -> None:
-    """Probe a block, with NO ``SO_REUSEADDR``.
+class _CandidateUnavailableError(RuntimeError):
+    """One candidate range is taken.  Internal: the caller tries the next one."""
+
+
+def acquire_port_range(
+    *,
+    count: int,
+    purpose: str,
+    range_start: int,
+    range_end: int,
+    lock_dir: str | Path,
+    exact_start: int | None = None,
+    step: int = 1,
+    bind_host: str = "",
+) -> PortRangeLease:
+    """Lease ``count`` contiguous ports, taking a lock and a bind probe for each.
+
+    ``exact_start`` demands one specific range and fails rather than sliding to
+    another, because a caller that pinned a base port published it somewhere.
+    """
+    _validate_range_request(
+        count=count,
+        purpose=purpose,
+        range_start=range_start,
+        range_end=range_end,
+        exact_start=exact_start,
+        step=step,
+    )
+    root = Path(lock_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    candidates = (
+        (exact_start,)
+        if exact_start is not None
+        else range(range_start, range_end - count + 2, step)
+    )
+    last_conflict: str | None = None
+    for start in candidates:
+        try:
+            return _acquire_candidate(
+                start=start,
+                count=count,
+                purpose=purpose,
+                lock_dir=root,
+                bind_host=bind_host,
+            )
+        except _CandidateUnavailableError as exc:
+            last_conflict = str(exc)
+            if exact_start is not None:
+                raise RuntimeError(
+                    f"port range {start}-{start + count - 1} is unavailable: {exc}"
+                ) from exc
+    detail = f"; last conflict: {last_conflict}" if last_conflict else ""
+    raise RuntimeError(
+        f"no available port blocks of {count} in {range_start}-{range_end} "
+        f"for {purpose!r} under {root}{detail}"
+    )
+
+
+def _validate_range_request(
+    *,
+    count: int,
+    purpose: str,
+    range_start: int,
+    range_end: int,
+    exact_start: int | None,
+    step: int,
+) -> None:
+    if count < 1:
+        raise ValueError("port lease count must be positive")
+    if not purpose.strip():
+        raise ValueError("port lease purpose must not be empty")
+    if not 1 <= range_start <= range_end <= 65535:
+        raise ValueError("port allocation range must be within 1-65535")
+    if range_end - range_start + 1 < count:
+        raise ValueError("port allocation range is smaller than the requested count")
+    if step < 1:
+        raise ValueError("port allocation step must be positive")
+    if exact_start is not None and not range_start <= exact_start <= range_end - count + 1:
+        raise ValueError("exact port range must lie inside the allocation range")
+
+
+def _acquire_candidate(
+    *, start: int, count: int, purpose: str, lock_dir: Path, bind_host: str
+) -> PortRangeLease:
+    lock_files: list[TextIO] = []
+    try:
+        for port in range(start, start + count):
+            lock_file = (lock_dir / f"port-{port}.lock").open("a+")
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                lock_file.seek(0)
+                held_by = lock_file.read().strip()
+                lock_file.close()
+                raise _CandidateUnavailableError(
+                    f"port {port} is leased by another process ({held_by})"
+                ) from exc
+            lock_files.append(lock_file)
+        _probe_ports(range(start, start + count), bind_host=bind_host)
+        diagnostics = json.dumps(
+            {
+                "hostname": socket.gethostname(),
+                "pid": os.getpid(),
+                "port_start": start,
+                "port_end": start + count - 1,
+                "purpose": purpose,
+                "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+            },
+            sort_keys=True,
+        )
+        for lock_file in lock_files:
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(diagnostics + "\n")
+            lock_file.flush()
+        return PortRangeLease(
+            start=start,
+            count=count,
+            lock_dir=lock_dir,
+            purpose=purpose,
+            _lock_files=tuple(lock_files),
+        )
+    except Exception:
+        for lock_file in reversed(lock_files):
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+            lock_file.close()
+        raise
+
+
+def _probe_ports(ports: Iterable[int], *, bind_host: str) -> None:
+    """Probe every port at once, with NO ``SO_REUSEADDR``.
 
     ``SO_REUSEADDR`` lets two sockets that are bound but not listening hold the
     same address, which is exactly the shape of two allocators probing at once:
@@ -196,13 +392,25 @@ def assert_ports_available(ports: WorkerPorts) -> None:
     refused with EADDRINUSE without it.  A live listener is refused either way,
     so setting it bought nothing and cost the only mutual exclusion the probe
     could offer against a port user that does not take our lock.
+
+    The sockets are held until every port in the range has bound, so one probe
+    cannot be handed a port an earlier probe of the same range already released.
     """
-    for port in (ports.server, ports.chromium, ports.vnc, ports.vlc):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    listeners: list[socket.socket] = []
+    try:
+        for port in ports:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                sock.bind(("", port))
+                listener.bind((bind_host, port))
             except OSError as exc:
-                raise RuntimeError(f"port {port} is already in use") from exc
+                listener.close()
+                raise _CandidateUnavailableError(
+                    f"port {port} failed its bind probe: {exc}"
+                ) from exc
+            listeners.append(listener)
+    finally:
+        for listener in listeners:
+            listener.close()
 
 
 def allocate_worker_ports(
@@ -226,36 +434,36 @@ def allocate_worker_ports(
     root = Path(lock_dir)
     work_root = Path(work_dir) if work_dir is not None else root
     log_root = Path(log_dir)
-    root.mkdir(parents=True, exist_ok=True)
     work_root.mkdir(parents=True, exist_ok=True)
     log_root.mkdir(parents=True, exist_ok=True)
-    for slot in range(max_slots):
+    range_lease = acquire_port_range(
+        count=stride,
+        purpose="desktop-worker",
+        range_start=base,
+        # Clamped, so a base high enough that the last slot runs off the end of
+        # the TCP range exhausts the span rather than raising about port 65536.
+        range_end=min(base + max_slots * stride - 1, 65535),
+        lock_dir=root,
+        step=stride,
+    )
+    try:
+        slot = (range_lease.start - base) // stride
         ports = ports_for_worker(base, slot, stride=stride)
-        lock_file = (root / f"ports_{slot:04d}.lock").open("a+")
-        try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock_file.close()
-            continue
-        try:
-            assert_ports_available(ports)
-        except Exception:
-            fcntl.flock(lock_file, fcntl.LOCK_UN)
-            lock_file.close()
-            continue
         lease_name = f"w{os.getpid()}_{slot:x}"
         workdir = work_root / lease_name
         logdir = log_root / lease_name
         workdir.mkdir(parents=True, exist_ok=True)
         logdir.mkdir(parents=True, exist_ok=True)
-        lock_file.seek(0)
-        lock_file.truncate()
-        lock_file.write(f"pid={os.getpid()} ports={ports}\n")
-        lock_file.flush()
-        return PortLease(
-            ports=ports, slot=slot, workdir=workdir, logdir=logdir, _lock_file=lock_file
-        )
-    raise RuntimeError(f"no available port blocks under {root} from base {base}")
+    except Exception:
+        range_lease.release()
+        raise
+    return PortLease(
+        ports=ports,
+        slot=slot,
+        workdir=workdir,
+        logdir=logdir,
+        _range_lease=range_lease,
+    )
 
 
 class DesktopSessionEnv(Protocol):
@@ -371,6 +579,10 @@ class CheckedOutDesktopSession[DesktopEnvT: DesktopSessionEnv]:
     @property
     def session_id(self) -> str:
         return self._session.session_id
+
+    @property
+    def ports(self) -> WorkerPorts:
+        return self._session.lease.ports
 
     def tracked_env(self) -> DesktopEnvT:
         """An env proxy that refreshes lease activity around every method call."""
