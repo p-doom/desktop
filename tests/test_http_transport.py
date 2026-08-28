@@ -27,8 +27,6 @@ from desktop import ir
 from desktop.execute.guest_program import (
     ATOMIC_RESULT_PREFIX,
     ATOMIC_SCHEMA_VERSION,
-    DIRECT_XTEST_CLICK_BACKEND,
-    PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
     ExecutionError,
 )
 from desktop.execute.transport import HttpGuiTransport
@@ -104,7 +102,7 @@ def sent_programs() -> list[str]:
     ]
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _guest_stdout(operations, frozen_kwargs) -> str:
     return run_guest_program(operations, **dict(frozen_kwargs)).stdout
 
@@ -163,12 +161,14 @@ def test_an_unroutable_path_is_an_execution_error(transport):
 def test_every_input_goes_out_as_python_dash_c(transport):
     """The guest agent runs a subprocess; it does not eval.  That is why the whole
     action has to be compiled into one program."""
-    STATE["routes"]["/execute"] = ok_execute()
-    transport.execute_pyautogui("pyautogui.moveTo(1, 2)")
+    operations = (ir.move_to(1, 2),)
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
+    transport.execute_atomic(operations)
     (request,) = STATE["requests"]
     assert request["body"]["shell"] is False
     assert request["body"]["command"][:2] == ["python", "-c"]
-    assert request["body"]["command"][2].startswith("import pyautogui;")
+    assert request["body"]["command"][2].startswith("\nimport json, math, sys")
+    assert "pyautogui" not in request["body"]["command"][2]
 
 
 def test_cursor_position_is_parsed_as_a_pair(transport):
@@ -194,28 +194,35 @@ def test_a_malformed_screen_size_is_refused(transport):
         transport.screen_size()
 
 
-def test_move_to_clamps_against_the_live_screen_size(transport):
-    STATE["routes"]["/screen_size"] = (200, {"width": 1920, "height": 1080})
-    STATE["routes"]["/execute"] = ok_execute()
+def test_move_to_is_clamped_by_the_guest_screen(transport):
+    operations = (ir.move_to(5000, -20),)
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
     transport.move_to(5000, -20)
-    assert "pyautogui.moveTo(1919, 0)" in sent_programs()[-1]
     assert transport.audit.operations[-1] == ir.move_to(1919, 0)
+    assert [request["path"] for request in STATE["requests"]] == ["/execute"]
 
 
-def test_glide_to_clamps_and_records_its_duration(transport):
-    STATE["routes"]["/screen_size"] = (200, {"width": 1920, "height": 1080})
-    STATE["routes"]["/execute"] = ok_execute()
-    transport.glide_to(5000, 500, 99.0)
-    assert "duration=10.0" in sent_programs()[-1]
-    assert transport.audit.operations[-1] == ir.Operation("glide_to", (1919, 500, 10.0))
+def test_glide_to_preserves_a_possible_duration_and_rejects_an_impossible_one(transport):
+    with pytest.raises(ValueError, match="glide seconds"):
+        transport.glide_to(5000, 500, 99.0)
+    assert sent_programs() == []
+    operations = (ir.glide_to(5000, 500, 0.01),)
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
+    transport.glide_to(5000, 500, 0.01)
+    assert transport.audit.operations[-1] == ir.Operation("glide_to", (1919, 500, 0.01))
 
 
 def test_mouse_down_and_up_maintain_the_held_set(transport):
-    STATE["routes"]["/execute"] = ok_execute()
+    down = (ir.mouse_down("left"),)
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(down))
     transport.mouse_down("LMB")
     assert transport.audit.held_buttons == {"left"}
     with pytest.raises(ExecutionError, match="button already held: left"):
         transport.mouse_down("left")
+    up = (ir.mouse_up("left"),)
+    STATE["routes"]["/execute"] = ok_execute(
+        guest_marker(up, initial_buttons={"left"}, initial_mask=1 << 8)
+    )
     transport.mouse_up(1)
     assert transport.audit.held_buttons == set()
     with pytest.raises(ExecutionError, match="button not held: left"):
@@ -232,44 +239,59 @@ def test_an_unknown_button_never_reaches_the_guest(transport):
 
 
 def test_scroll_records_the_two_axis_form(transport):
-    STATE["routes"]["/execute"] = ok_execute()
+    operations = (ir.scroll(0, -4),)
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
     transport.scroll(-4)
-    assert "pyautogui.scroll(-4)" in sent_programs()[-1]
     assert transport.audit.operations[-1] == ir.scroll(0, -4)
     assert transport.audit.scroll_total == -4
 
 
 def test_hscroll_records_the_horizontal_axis(transport):
-    STATE["routes"]["/execute"] = ok_execute()
+    operations = (ir.scroll(7, 0),)
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
     transport.hscroll(7)
-    assert "pyautogui.hscroll(7)" in sent_programs()[-1]
     assert transport.audit.operations[-1] == ir.scroll(7, 0)
 
 
 def test_a_key_chord_presses_in_order_and_releases_in_reverse(transport):
-    STATE["routes"]["/execute"] = ok_execute()
+    operations = (
+        ir.key_down("ctrlleft"),
+        ir.key_down("a"),
+        ir.key_up("a"),
+        ir.key_up("ctrlleft"),
+    )
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
     transport.key_chord(["CTRL", "KeyA"])
-    program = sent_programs()[-1]
-    assert program.index("keyDown('ctrl')") < program.index("keyDown('a')")
-    assert program.index("keyDown('a')") < program.index("keyUp('a')")
-    assert program.index("keyUp('a')") < program.index("keyUp('ctrl')")
+    assert tuple(transport.audit.operations) == operations
 
 
 def test_an_empty_key_chord_is_refused(transport):
-    with pytest.raises(ExecutionError, match="empty key chord"):
+    from desktop.execute.keymap import KeymapError
+
+    with pytest.raises(KeymapError, match="empty key chord"):
         transport.key_chord([])
 
 
-def test_coalesced_type_sends_the_gtk_clipboard_program(transport):
-    STATE["routes"]["/execute"] = ok_execute()
+def test_coalesced_type_sends_the_direct_xtest_program(transport):
+    operations = (ir.coalesced_type("héllo"),)
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
     transport.coalesced_type("héllo")
     program = sent_programs()[-1]
-    assert "gi.require_version('Gtk','3.0')" in program
+    assert "xtest.fake_input" in program
+    assert "Gtk" not in program and "pyautogui" not in program
     assert transport.audit.typed_texts == ["héllo"]
 
 
 def test_wait_clamps_and_records(transport):
+    STATE["routes"]["/execute"] = ok_execute(
+        ATOMIC_RESULT_PREFIX
+        + json.dumps(_payload(operations=[{"kind": "wait", "args": [0.0]}]))
+    )
     transport.wait(-5)
+    STATE["routes"]["/execute"] = ok_execute(
+        ATOMIC_RESULT_PREFIX
+        + json.dumps(_payload(operations=[{"kind": "wait", "args": [10.0]}]))
+    )
     transport.wait(99)
     assert [op.args[0] for op in transport.audit.operations] == [0.0, 10.0]
 
@@ -299,7 +321,7 @@ def test_the_transport_sends_exactly_one_program_per_action(transport):
     STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
     transport.execute_atomic(operations)
     assert len(sent_programs()) == 1
-    assert sent_programs()[0].startswith("import json, sys, traceback")
+    assert sent_programs()[0].startswith("\nimport json, math, sys")
 
 
 def test_a_held_button_is_absorbed_into_the_audit(transport):
@@ -324,6 +346,14 @@ def test_held_keys_are_absorbed_on_success_and_dropped_on_failure(transport):
     assert transport.audit.held_keys == set(), "a failed action must not leave keys held"
 
 
+def test_a_successful_action_must_match_the_queried_held_keys(transport):
+    operations = (ir.key_down("ControlLeft"),)
+    payload = _payload(held_keys=[])
+    STATE["routes"]["/execute"] = ok_execute(ATOMIC_RESULT_PREFIX + json.dumps(payload))
+    with pytest.raises(ExecutionError, match="held key readback drifted"):
+        transport.execute_atomic(operations)
+
+
 def test_a_failing_action_is_reported_not_raised(transport):
     operations = (ir.Operation("raise_for_test", ("injected failure",)),)
     STATE["routes"]["/execute"] = ok_execute(guest_marker(operations), returncode=1)
@@ -341,15 +371,15 @@ def test_typed_text_is_absorbed_into_the_audit(transport):
     assert transport.audit.typed_texts == ["hello"]
 
 
-def test_the_click_backend_is_threaded_into_the_compiled_program(transport):
+def test_click_uses_one_direct_xtest_press_release_path(transport):
     operations = (ir.click("right"),)
-    stdout = guest_marker(operations, click_backend=DIRECT_XTEST_CLICK_BACKEND)
-    STATE["routes"]["/execute"] = ok_execute(stdout)
-    result = transport.execute_atomic(
-        operations, click_backend=DIRECT_XTEST_CLICK_BACKEND
-    )
-    assert result.click_backend == DIRECT_XTEST_CLICK_BACKEND
-    assert DIRECT_XTEST_CLICK_BACKEND in sent_programs()[-1]
+    STATE["routes"]["/execute"] = ok_execute(guest_marker(operations))
+    result = transport.execute_atomic(operations)
+    assert [event["event"] for event in result.x_injection_evidence] == [
+        "button_press",
+        "button_release",
+    ]
+    assert "pyautogui" not in sent_programs()[-1]
 
 
 def _payload(**overrides) -> dict:
@@ -367,15 +397,11 @@ def _payload(**overrides) -> dict:
         "error": None,
         "failure_kind": None,
         "operations": [],
+        "held_keys": [],
         "backend_primitives": [],
-        "x_event_sync_evidence": [],
-        "x_sync_attempt_evidence": [],
-        "click_backend": PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
         "x_injection_evidence": [],
-        "x_injection_timestamps": [],
+        "keymap_restorations": [],
         "final_pointer_readback": {},
-        "attempt_hook_restore_errors": [],
-        "passive_x_observer": {},
     }
     base.update(overrides)
     return base
@@ -387,7 +413,6 @@ def _parse(transport, payload=None, *, output=None, returncode=0):
     return transport._parse_atomic_payload(
         {"status": "success", "returncode": returncode, "output": output},
         operations=(),
-        click_backend=PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
     )
 
 
@@ -400,11 +425,8 @@ def test_a_payload_with_no_stdout_is_refused(transport):
         transport._parse_atomic_payload(
             {"status": "success", "returncode": 0, "output": None},
             operations=(),
-            click_backend=PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
         )
-    assert caught.value.evidence["schema_version"] == (
-        "desktop_env_atomic_output_failure_v1"
-    )
+    assert caught.value.evidence["schema_version"] == ("desktop_atomic_output_failure_v2")
 
 
 @pytest.mark.parametrize("count", [0, 2, 3])
@@ -416,9 +438,9 @@ def test_a_wrong_number_of_markers_is_refused(transport, count):
 
 
 def test_guest_chatter_around_the_marker_is_tolerated(transport):
-    """Guest stdout is shared with GTK warnings and X11 noise."""
+    """Guest stdout is shared with X11 and application noise."""
     line = ATOMIC_RESULT_PREFIX + json.dumps(_payload())
-    output = f"Gtk-WARNING **: blah\n{line}\nlibGL error: nope\n"
+    output = f"Xlib warning: blah\n{line}\nlibGL error: nope\n"
     assert _parse(transport, output=output).ok is True
 
 
@@ -428,7 +450,7 @@ def test_an_invalid_json_marker_is_refused(transport):
     assert "raw_marker" in caught.value.evidence
 
 
-@pytest.mark.parametrize("schema", [0, 2, None, "1"])
+@pytest.mark.parametrize("schema", [0, 1, None, "2"])
 def test_a_wrong_schema_version_is_refused(transport, schema):
     with pytest.raises(ExecutionError, match="unexpected schema"):
         _parse(transport, _payload(_de_schema=schema))
@@ -511,28 +533,27 @@ def test_an_absent_guest_process_count_is_refused(transport):
         _parse(transport, payload)
 
 
-def test_a_drifted_click_backend_is_refused(transport):
-    with pytest.raises(ExecutionError, match="click backend drifted") as caught:
-        _parse(transport, _payload(click_backend=DIRECT_XTEST_CLICK_BACKEND))
-    assert caught.value.evidence["observed"] == DIRECT_XTEST_CLICK_BACKEND
+def test_absent_held_key_readback_is_refused(transport):
+    payload = _payload()
+    del payload["held_keys"]
+    with pytest.raises(ExecutionError, match="invalid held_keys"):
+        _parse(transport, payload)
 
 
-def test_unrestored_x_hooks_are_refused(transport):
-    """The program monkeypatches XTest inside the guest; leaving the hooks in
-    place would silently corrupt every later action in that interpreter."""
-    with pytest.raises(ExecutionError, match="X attempt hooks were not restored"):
-        _parse(transport, _payload(attempt_hook_restore_errors=["sync restore failed"]))
+def test_success_with_a_drifted_keymap_restoration_is_refused(transport):
+    restoration = {"keycode": 255, "original": [0, 0], "restored": [1, 1], "exact": False}
+    with pytest.raises(ExecutionError, match="drifted keymap restoration"):
+        _parse(transport, _payload(keymap_restorations=[restoration]))
 
 
 @pytest.mark.parametrize(
     "name",
     [
         "operations",
+        "held_keys",
         "backend_primitives",
-        "x_event_sync_evidence",
-        "x_sync_attempt_evidence",
         "x_injection_evidence",
-        "x_injection_timestamps",
+        "keymap_restorations",
     ],
 )
 @pytest.mark.parametrize("value", ["not a list", [1, 2], [None], {}])
@@ -557,11 +578,9 @@ def test_missing_optional_evidence_defaults_rather_than_failing(transport):
     payload = _payload()
     for optional in (
         "backend_primitives",
-        "x_event_sync_evidence",
         "x_injection_evidence",
+        "keymap_restorations",
         "final_pointer_readback",
-        "passive_x_observer",
-        "attempt_hook_restore_errors",
     ):
         payload.pop(optional)
     result = _parse(transport, payload)

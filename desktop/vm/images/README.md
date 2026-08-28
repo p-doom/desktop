@@ -25,10 +25,11 @@ agent, no OSWorld task setup, and different application versions. It is a tier
 *beneath* the KVM tier and never a replacement for it. Anything measured here is a
 plumbing check, not a result.
 
-It is still worth having: it runs on any node, it starts in seconds rather than
-minutes, and it has `pyautogui` + `python-xlib` installed, so a guest program
-compiled by `desktop/execute/guest_program.py` executes there. That makes the
-executor testable on a node with no virtualization at all.
+It is still worth having: it runs on any node, starts in seconds, and has
+`python-xlib`, so a guest program compiled by
+`desktop/execute/guest_program.py` executes there. PyAutoGUI remains installed
+only for OSWorld setup/evaluator code. `xdotool` is a differential test oracle,
+not an executor path.
 
 ## Flagged, not faked
 

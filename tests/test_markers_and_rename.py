@@ -121,7 +121,6 @@ def test_the_schema_key_the_guest_emits_is_the_key_the_host_checks():
     result = transport._parse_atomic_payload(
         {"output": run.stdout, "returncode": 0, "status": "success"},
         operations=(ir.move_to(1, 1),),
-        click_backend=GP.PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
     )
     assert result.ok is True
     assert result.cursor_after == (1, 1)
@@ -137,7 +136,6 @@ def test_a_wrongly_named_schema_key_is_rejected_rather_than_ignored():
         transport._parse_atomic_payload(
             {"output": stdout, "returncode": 0, "status": "success"},
             operations=(),
-            click_backend=GP.PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
         )
 
 
@@ -182,18 +180,18 @@ def test_a_program_containing_every_canonical_kind_executes_cleanly():
     assert run.payload["error"] is None
     assert run.payload["failure_kind"] is None
     assert run.payload["cleanup_attempted"] is False
-    assert run.payload["attempt_hook_restore_errors"] == []
+    assert run.payload["keymap_restorations"] == []
 
 
 def test_the_coalesced_type_program_executes_with_its_renamed_locals():
-    """``compile_unicode_coalesced_type`` carries its own ``_de_pasted`` flag."""
-    # A non-ASCII payload, because that is now what selects the clipboard route.
-    source = GP.compile_unicode_coalesced_type("é")
-    assert "_de_pasted" in source and "_r1a" not in source
-    run = run_guest_program((ir.coalesced_type("héllo ✓"),), with_gi=True)
+    source, _ = compile_atomic_guest_program(
+        (ir.coalesced_type("héllo ✓"),), initial_buttons=set(), initial_keys=set()
+    )
+    assert "_de_keymap_restorations" in source and "_r1a" not in source
+    run = run_guest_program((ir.coalesced_type("héllo ✓"),))
     assert run.returncode == 0, run.stderr
     assert run.payload["ok"] is True, run.payload["error"]
-    assert run.clipboard_text == "héllo ✓"
+    assert run.payload["keymap_restorations"][0]["exact"] is True
 
 
 def test_every_payload_key_the_host_reads_is_a_key_the_guest_emits():
@@ -213,38 +211,26 @@ def test_every_payload_key_the_host_reads_is_a_key_the_guest_emits():
         "error",
         "failure_kind",
         "operations",
+        "held_keys",
         "backend_primitives",
-        "x_event_sync_evidence",
-        "x_sync_attempt_evidence",
-        "click_backend",
         "x_injection_evidence",
-        "x_injection_timestamps",
+        "keymap_restorations",
         "final_pointer_readback",
-        "passive_x_observer",
-        "attempt_hook_restore_errors",
         "_de_schema",
     }
     assert read <= emitted, f"host reads keys the guest never emits: {sorted(read - emitted)}"
 
 
-def test_the_step_comment_marker_is_emitted_for_every_lowered_operation():
-    """Not parsed by anything, but it is a renamed marker; keep it consistent.
-
-    Note the indices track the LOWERED stream, not the semantic one: a coalesced
-    ``mouse_down``/``mouse_up`` pair is one ``click`` step, so step *n* is not
-    semantic operation *n*.  Both streams are in the payload, so the mapping is
-    recoverable -- but do not read a step number as a semantic index.
-    """
+def test_the_payload_carries_every_lowered_operation_in_order():
     from desktop.execute.guest_program import lower_guest_operations
 
-    program, _ = compile_atomic_guest_program(
-        ALL_CANONICAL_OPERATIONS, initial_buttons=set(), initial_keys=set()
-    )
+    run = run_guest_program(ALL_CANONICAL_OPERATIONS)
     lowered = lower_guest_operations(ALL_CANONICAL_OPERATIONS)
-    for index, operation in enumerate(lowered):
-        assert f"# DESKTOP_ENV_ATOMIC_STEP_{index}:{operation.kind}" in program
+    assert run.payload["semantic_operations"] == [
+        operation.as_dict() for operation in ALL_CANONICAL_OPERATIONS
+    ]
+    assert run.payload["lowered_operations"] == [operation.as_dict() for operation in lowered]
     assert len(lowered) < len(ALL_CANONICAL_OPERATIONS), "this sample should coalesce"
-    assert f"DESKTOP_ENV_ATOMIC_STEP_{len(lowered)}:" not in program
 
 
 @pytest.mark.parametrize("operation", ALL_CANONICAL_OPERATIONS)

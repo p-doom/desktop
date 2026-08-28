@@ -1,15 +1,4 @@
-"""The engine's transport contract, and the receipt it builds.
-
-The engine takes ONE transport shape: ``execute_atomic`` must be able to receive
-``click_backend``, because the engine is what chooses it.  That is checked by
-INSPECTING the signature at construction, and a transport that fails the check is
-refused there rather than being called without the keyword -- which would drop an
-explicit ``click_backend=`` on the floor.  The alternative to inspection --
-calling and catching ``TypeError`` -- also swallows a genuine ``TypeError`` raised
-from *inside* a transport, so a real bug would read as "capability absent".  The
-critical test here is therefore the last group: a transport that raises
-``TypeError`` from its body must have that ``TypeError`` propagate.
-"""
+"""The engine's single transport contract and the receipt it builds."""
 
 from __future__ import annotations
 
@@ -20,8 +9,6 @@ import pytest
 from desktop import ir
 from desktop.execute.engine import Engine, StepReceipt
 from desktop.execute.guest_program import (
-    DIRECT_XTEST_CLICK_BACKEND,
-    PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND,
     AtomicExecutionResult,
     ExecutionError,
     InputAudit,
@@ -59,7 +46,6 @@ class _BaseTransport:
         self.audit = InputAudit()
         self._cursor = cursor
         self._screen = screen
-        self.seen: list[dict] = []
 
     def cursor_position(self):
         return self._cursor
@@ -68,98 +54,16 @@ class _BaseTransport:
         return self._screen
 
 
-class PinnedBackendTransport(_BaseTransport):
-    """A transport that pins one click backend: no ``click_backend`` parameter."""
-
-    def execute_atomic(self, operations):
-        self.seen.append({"operations": operations})
-        return _result(semantic_operations=operations)
-
-
-class SwitchableBackendTransport(_BaseTransport):
-    def execute_atomic(self, operations, *, click_backend="default"):
-        self.seen.append({"operations": operations, "click_backend": click_backend})
-        return _result(semantic_operations=operations)
-
-
-class KwargsTransport(_BaseTransport):
-    def execute_atomic(self, operations, **kwargs):
-        self.seen.append({"operations": operations, **kwargs})
-        return _result(semantic_operations=operations)
-
-
-class PositionalOnlyTransport(_BaseTransport):
-    def execute_atomic(self, operations, click_backend="default"):
-        self.seen.append({"operations": operations, "click_backend": click_backend})
-        return _result(semantic_operations=operations)
-
-
 class RaisingTypeErrorTransport(_BaseTransport):
-    """Accepts the keyword, then raises a GENUINE ``TypeError`` from its body."""
-
-    def execute_atomic(self, operations, *, click_backend="default"):
+    def execute_atomic(self, operations):
         raise TypeError("unsupported operand type(s) for +: 'int' and 'str'")
-
-
-class OpaqueTransport(_BaseTransport):
-    """``execute_atomic`` whose signature cannot be inspected."""
-
-    execute_atomic = staticmethod(min)  # a C builtin: inspect.signature raises
 
 
 def test_recording_transport_satisfies_the_contract():
     assert Engine(RecordingTransport()).transport is not None
 
 
-def test_a_var_keyword_transport_can_receive_the_backend():
-    assert Engine(KwargsTransport()).transport is not None
-
-
-def test_a_positional_or_keyword_parameter_also_counts():
-    assert Engine(PositionalOnlyTransport()).transport is not None
-
-
-def test_a_transport_that_pins_one_backend_is_refused_at_construction():
-    """The engine chooses the backend; a transport that cannot receive it would
-    turn an explicit ``click_backend=`` into a silent no-op."""
-    with pytest.raises(ExecutionError, match="does not accept click_backend"):
-        Engine(PinnedBackendTransport())
-
-
-def test_an_uninspectable_transport_is_refused_at_construction():
-    with pytest.raises(ExecutionError, match="no inspectable signature"):
-        Engine(OpaqueTransport())
-
-
-def test_an_unknown_click_backend_is_refused_at_construction():
-    """Not at the first ``apply``: ``RecordingTransport`` never validated it at
-    all, so an engine could produce receipts naming a backend that does not
-    exist."""
-    with pytest.raises(ExecutionError, match="unsupported click backend"):
-        Engine(RecordingTransport(), click_backend="no-such-backend")
-
-
-def test_the_contract_check_does_not_call_the_transport():
-    transport = SwitchableBackendTransport()
-    Engine(transport)
-    assert transport.seen == []
-
-
-def test_a_switchable_transport_receives_the_configured_backend():
-    transport = SwitchableBackendTransport()
-    engine = Engine(transport, click_backend=DIRECT_XTEST_CLICK_BACKEND)
-    engine.apply((ir.move_to(1, 2),))
-    assert transport.seen[0]["click_backend"] == DIRECT_XTEST_CLICK_BACKEND
-
-
-def test_the_default_backend_is_the_release_motion_one():
-    transport = SwitchableBackendTransport()
-    Engine(transport).apply((ir.move_to(1, 2),))
-    assert transport.seen[0]["click_backend"] == PYAUTOGUI_RELEASE_MOTION_CLICK_BACKEND
-
-
 def test_a_genuine_typeerror_from_inside_a_transport_propagates():
-    """It must NOT be read as "capability absent" and retried."""
     engine = Engine(RaisingTypeErrorTransport())
     with pytest.raises(TypeError, match="unsupported operand"):
         engine.apply((ir.move_to(1, 2),))
@@ -172,13 +76,9 @@ def test_a_propagated_typeerror_leaves_no_receipt_behind():
     assert engine.receipts == []
 
 
-def test_the_engine_never_wraps_execute_atomic_in_except_typeerror():
-    """Structural guard on the mechanism, not just the behaviour."""
-    from desktop.execute.engine import _require_click_backend_parameter
-
+def test_the_engine_never_retries_a_transport_typeerror():
     source = inspect.getsource(Engine._execute)
     assert "except" not in source
-    assert "TypeError" in inspect.getsource(_require_click_backend_parameter)
 
 
 def test_a_successful_apply_builds_a_verified_receipt(recording):
@@ -213,7 +113,7 @@ def test_a_host_guest_cursor_disagreement_fails_the_step():
     """The failure mode a delta-resolving grammar cannot otherwise detect."""
 
     class LyingTransport(_BaseTransport):
-        def execute_atomic(self, operations, *, click_backend="x"):
+        def execute_atomic(self, operations):
             return _result(cursor=(9, 9), cursor_before=(7, 7), cursor_after=(9, 9))
 
     receipt = Engine(LyingTransport()).apply((ir.move_to(1, 1),))
@@ -245,7 +145,7 @@ def test_a_step_whose_final_readback_never_ran_still_leaves_a_receipt():
     raises.  The raw sentinel reaches the receipt, so it stays measurable."""
 
     class NoFinalReadbackTransport(_BaseTransport):
-        def execute_atomic(self, operations, *, click_backend="x"):
+        def execute_atomic(self, operations):
             return _result(
                 ok=False,
                 pointer_button_mask=-1,
