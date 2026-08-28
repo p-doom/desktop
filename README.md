@@ -80,7 +80,7 @@ record inside each codec, and the resolution context arrives as data through
 | `execute/keymap.py` | The key and pointer-button name tables, and the chord and transition helpers over them. |
 | `execute/engine.py` | Applies operations, verifies the cursor readback, emits a receipt. |
 | `vm/runtime.py` | The `Runtime` protocol: start, stop, checkpoint, restore, fork. |
-| `vm/qemu.py` | QMP `savevm`/`loadvm` (13.6–16.6 s reboot-revert → 4.4–5.2 s restore), plus CoW `fork` and an `-accel tcg` fallback. |
+| `vm/qemu.py` | QMP `savevm`/`loadvm` (13.6–16.6 s reboot-revert → 4.4–5.2 s restore), plus CoW `fork`.  KVM or raise; `-accel tcg` only on explicit request. |
 | `vm/readiness.py` | Whether the desktop is up or the framebuffer is still black, from the non-dark-pixel ratio and the luma standard deviation. The `luma_sampler` seam makes the rule testable against synthetic frames with no VM. |
 | `vm/factory.py` | The constructor side: `build_qemu_runtime`, `build_desktop_session`, `qemu_session_factory`, `build_desktop_pool`. Plain functions, explicit config, no name registry and no plugin lookup — you pass an image path, not a provider name. |
 | `vm/session.py` | One isolated desktop with an attested reset: a guest nonce must be gone afterwards, or the reset did not happen. |

@@ -98,9 +98,11 @@ def build_qemu_runtime(
     """Construct one ``QemuRuntime`` from explicit config plus named fallbacks.
 
     ``accelerator`` left as ``None`` means detect: KVM when ``/dev/kvm`` is usable,
-    otherwise TCG with a warning.  Passing ``"kvm"`` explicitly does NOT assert
-    that KVM exists -- ``QemuRuntime.start`` will simply fail on a node without
-    it, which is the honest outcome for a caller that demanded acceleration.
+    otherwise raise.  There is deliberately no automatic TCG fallback -- ask for
+    it with ``accelerator="tcg"`` or ``DESKTOP_ENV_ACCEL=tcg``.  Passing ``"kvm"``
+    explicitly does NOT assert that KVM exists -- ``QemuRuntime.start`` will
+    simply fail on a node without it, which is the honest outcome for a caller
+    that demanded acceleration.
     """
     resolved_accelerator = accelerator or _env("DESKTOP_ENV_ACCEL")
     if resolved_accelerator is not None and resolved_accelerator not in {"kvm", "tcg"}:
