@@ -12,6 +12,12 @@ from .factory import (
     build_qemu_runtime,
     qemu_session_factory,
 )
+from .image_build import (
+    DebArtifact,
+    DesktopImageBuildConfig,
+    DesktopImageBuilder,
+    GuestCommandError,
+)
 from .osworld_client import GuestAgentError, OSWorldClient
 from .pool import (
     CheckedOutDesktopSession,
@@ -55,10 +61,14 @@ __all__ = [
     "CheckedOutDesktopSession",
     "ConfigError",
     "ConnectableProvider",
+    "DebArtifact",
+    "DesktopImageBuildConfig",
+    "DesktopImageBuilder",
     "DesktopPoolConfig",
     "DesktopSession",
     "DesktopSessionPool",
     "GuestAgentError",
+    "GuestCommandError",
     "GuestPorts",
     "GuestScript",
     "OSWorldClient",
