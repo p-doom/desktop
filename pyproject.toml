@@ -35,7 +35,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-# Not `desktop*`: this repository also holds the `desktop_fleet` package, which
+# Not `desktop*`: this repository once also held the `desktop_fleet` package, which
 # is a separate distribution and must not be swept into this wheel.
 include = ["desktop", "desktop.*"]
 

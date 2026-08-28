@@ -10,10 +10,10 @@ desktops run on.
 | directory | distribution | handles |
 |---|---|---|
 | `desktop/` | `desktop` | the computer is *wrong* — black framebuffer, cursor did not land, reset did not rewind. Synchronous; the caller owns the lifetime. |
-| `desktop_fleet/` | `desktop-fleet` | the computer is *gone* — Slurm preemption, a dead node, a stale heartbeat, a leaked process group, queue-or-fail. |
+| *(p-doom/desktop-fleet)* | `desktop-fleet` | the computer is *gone* — Slurm preemption, a dead node, a stale heartbeat, a leaked process group, queue-or-fail. |
 
-`desktop_fleet` may import `desktop`; `desktop` must never import
-`desktop_fleet`, and must never learn what a fleet is. That is what keeps it
+`desktop-fleet` (now its own repository) may import `desktop`; `desktop` must
+never import it, and must never learn what a fleet is. That is what keeps it
 usable against one VM with no scheduler, and it is why the Pillow-only
 dependency floor below can hold.
 
