@@ -17,7 +17,6 @@ else in this package, so there is no container argv and no bind list.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -54,6 +53,7 @@ PIP_PACKAGES = (
 GUEST_MODULE_PROBE = (
     "PyPDF2",
     "docx",
+    # PyMuPDF's grader-facing import name.
     "fitz",
     "gimpformats",
     "odf",
@@ -62,7 +62,6 @@ GUEST_MODULE_PROBE = (
     "pdfplumber",
     "pikepdf",
     "pptx",
-    "pymupdf",
 )
 
 GUEST_TOOL_PROBE = ("pdftk", "qpdf", "xcf2png", "xdotool")
@@ -74,6 +73,7 @@ _GUEST_SUDO_PASSWORD = "password"
 _PROVISION_SCRIPT = "/tmp/desktop_image_provision.sh"
 _PROVISION_LOG = "/tmp/desktop_image_provision.log"
 _PROVISION_MARKER = "/tmp/desktop_image_provision.rc"
+_GUEST_BOOT_ID = "/proc/sys/kernel/random/boot_id"
 _RELOADER_HOLD_S = 20
 _RETRY_FUNCTION = (
     'retry() { for _ in $(seq 1 40); do "$@" && return 0; sleep 10; done; return 1; }'
@@ -108,7 +108,6 @@ class DesktopImageBuildConfig:
     upstream: Path
     output: Path
     runtime_dir: Path
-    overlay: bool = True
     ram_size: str = "8G"
     cpu_cores: int = 4
     qemu_binary: str = "qemu-system-x86_64"
@@ -218,6 +217,46 @@ def render_verification_script() -> str:
     )
 
 
+def _verification_failures(checks: dict[str, object]) -> list[str]:
+    failures: list[str] = []
+    missing = checks.get("missing_modules")
+    if missing != []:
+        failures.append(f"grader modules the guest cannot import: {missing!r}")
+    leaked = checks.get("agent_installed_modules")
+    if leaked != []:
+        failures.append(f"modules a grader scores by their absence are installed: {leaked!r}")
+    tools = checks.get("tools")
+    if not isinstance(tools, dict):
+        failures.append(f"the guest reported no tool paths: {tools!r}")
+    elif absent := [name for name in GUEST_TOOL_PROBE if not tools.get(name)]:
+        failures.append(f"tools absent from the guest PATH: {absent}")
+    if checks.get("production_server_call") is not True:
+        failures.append("the guest server source still carries the debug call")
+    reloader = checks.get("reloader_disabled")
+    if not isinstance(reloader, dict):
+        failures.append(f"the reloader probe did not run: {reloader!r}")
+    else:
+        if reloader.get("pids_stable") is not True:
+            failures.append(
+                "a site-packages write restarted the guest server: "
+                f"{reloader.get('pids_before')!r} -> {reloader.get('pids_after')!r}"
+            )
+        if reloader.get("concurrent") is not True:
+            failures.append(
+                "the guest server did not serve a request across a site-packages "
+                f"write: {reloader.get('site_packages_write_seconds')!r}s"
+            )
+    return failures
+
+
+def _require_verified(checks: dict[str, object], image: Path) -> None:
+    failures = _verification_failures(checks)
+    if failures:
+        raise GuestCommandError(
+            f"The guest image {image} failed verification:\n" + "\n".join(failures)
+        )
+
+
 def overlay_create_argv(binary: str, base: Path, target: Path) -> list[str]:
     return [
         binary,
@@ -229,6 +268,19 @@ def overlay_create_argv(binary: str, base: Path, target: Path) -> list[str]:
         "qcow2",
         "-b",
         str(base),
+        str(target),
+    ]
+
+
+def image_convert_argv(binary: str, source: Path, target: Path) -> list[str]:
+    return [
+        binary,
+        "convert",
+        "-f",
+        "qcow2",
+        "-O",
+        "qcow2",
+        str(source),
         str(target),
     ]
 
@@ -284,7 +336,6 @@ def build_manifest(
             "mtime": int(upstream.st_mtime),
         },
         "output": str(config.output),
-        "mode": "overlay" if config.overlay else "copy",
         "guest_server_call": PRODUCTION_SERVER_CALL,
         "apt_packages": list(config.apt_packages),
         "pip_packages": list(config.pip_packages),
@@ -320,6 +371,12 @@ class DesktopImageBuilder:
         """Create the image, provision the guest, verify it, and write a manifest."""
 
         config = self.config
+        existing = [path for path in (config.output, config.manifest_path) if path.exists()]
+        if existing:
+            raise FileExistsError(
+                "Refusing to replace an existing image build: "
+                + ", ".join(str(path) for path in existing)
+            )
         config.output.parent.mkdir(parents=True, exist_ok=True)
         config.runtime_dir.mkdir(parents=True, exist_ok=True)
         target = config.partial_path
@@ -328,6 +385,7 @@ class DesktopImageBuilder:
             self._provision()
             self._reboot()
             self.report.checks.update(self._verify())
+        _require_verified(self.report.checks, target)
         target.replace(config.output)
         manifest = build_manifest(config, self.report)
         config.manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
@@ -343,6 +401,7 @@ class DesktopImageBuilder:
         try:
             with self._booted(probe):
                 self.report.checks.update(self._verify())
+            _require_verified(self.report.checks, self.config.output)
         finally:
             probe.unlink(missing_ok=True)
         return build_manifest(self.config, self.report)
@@ -350,10 +409,15 @@ class DesktopImageBuilder:
     def _create_image(self, target: Path) -> None:
         started = time.monotonic()
         target.unlink(missing_ok=True)
-        if self.config.overlay:
-            self._create_overlay(self.config.upstream, target)
-        else:
-            shutil.copyfile(self.config.upstream, target)
+        argv = image_convert_argv(
+            self.config.qemu_img_binary, self.config.upstream, target
+        )
+        result = subprocess.run(argv, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"qemu-img convert failed ({result.returncode}): "
+                f"{result.stdout}\n{result.stderr}"
+            )
         self.report.record("create_image", time.monotonic() - started)
         self.log(f"created {target} in {self.report.steps['create_image']}s")
 
@@ -536,14 +600,28 @@ class DesktopImageBuilder:
 
     def _reboot(self) -> None:
         started = time.monotonic()
+        before = self.guest_bash(f"cat {_GUEST_BOOT_ID}", timeout_s=60.0).strip()
         self.guest_root_bash(
             "setsid bash -c 'sleep 1; systemctl reboot' </dev/null >/dev/null 2>&1 &",
             timeout_s=60.0,
         )
-        time.sleep(20)
-        self._wait_for_guest(self.config.boot_timeout_s)
+        deadline = time.monotonic() + self.config.boot_timeout_s
+        self._wait_for_new_boot(before, deadline)
+        self._wait_for_guest(max(0.0, deadline - time.monotonic()))
         self.report.record("reboot", time.monotonic() - started)
         self.log(f"guest rebooted in {self.report.steps['reboot']}s")
+
+    def _wait_for_new_boot(self, before: str, deadline: float) -> None:
+        if not before:
+            raise GuestCommandError("The guest reported no boot id to reboot away from")
+        while time.monotonic() < deadline:
+            current = self._tolerant_bash(f"cat {_GUEST_BOOT_ID}").strip()
+            if current and current != before:
+                return
+            time.sleep(3)
+        raise GuestCommandError(
+            f"The guest did not reboot before its deadline (boot id stayed {before})"
+        )
 
     def _verify(self) -> dict[str, object]:
         started = time.monotonic()

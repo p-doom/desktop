@@ -47,6 +47,7 @@ from desktop.vm.image_build import (
     DesktopImageBuilder,
     GuestCommandError,
     build_manifest,
+    image_convert_argv,
     overlay_create_argv,
     qemu_argv,
     render_provision_script,
@@ -178,6 +179,22 @@ def test_the_overlay_command_names_the_backing_format_explicitly():
         "-b",
         "/base.qcow2",
         "/child.qcow2",
+    ]
+
+
+def test_the_published_image_command_flattens_its_source():
+    argv = image_convert_argv(
+        "qemu-img", Path("/base.qcow2"), Path("/published.qcow2")
+    )
+    assert argv == [
+        "qemu-img",
+        "convert",
+        "-f",
+        "qcow2",
+        "-O",
+        "qcow2",
+        "/base.qcow2",
+        "/published.qcow2",
     ]
 
 
@@ -409,6 +426,19 @@ VERIFICATION_OUTPUT = {
     "production_server_call": True,
 }
 
+RELOADER_OUTPUT = {
+    "site_package_rewritten": "/usr/lib/python3/dist-packages/flask/__init__.py",
+    "held_request_returncode": 0,
+    "held_request_error": None,
+    "site_packages_write_seconds": 0.4,
+    "concurrent": True,
+    "pids_before": ["1234"],
+    "pids_after": ["1234"],
+    "pids_stable": True,
+}
+
+VERIFIED_CHECKS = {**VERIFICATION_OUTPUT, "reloader_disabled": RELOADER_OUTPUT}
+
 
 def test_verify_reads_the_last_stdout_line_of_the_probe_as_json(guest, monkeypatch):
     """The guest prints apt/pip noise before the object; only the last line is it."""
@@ -577,6 +607,80 @@ def test_an_agent_that_never_answers_times_out_naming_what_it_last_saw(
 
 
 # --------------------------------------------------------------------------
+# the reboot
+
+_OLD_BOOT = "11111111-1111-1111-1111-111111111111"
+_NEW_BOOT = "22222222-2222-2222-2222-222222222222"
+
+
+def test_the_boot_wait_starts_only_once_the_guest_reports_a_new_boot_id(guest, monkeypatch):
+    monkeypatch.setattr(image_build.time, "sleep", lambda _: None)
+    answers = _script(
+        _execute(f"{_OLD_BOOT}\n"),
+        _execute(""),
+        _execute(f"{_OLD_BOOT}\n"),
+        (500, "gateway closed", "text/plain"),
+        _execute(f"{_NEW_BOOT}\n"),
+    )
+    served: list[int] = []
+
+    def _route():
+        served.append(1)
+        return answers()
+
+    ROUTES["/execute"] = _route
+    at_boot_wait: list[int] = []
+    monkeypatch.setattr(
+        DesktopImageBuilder,
+        "_wait_for_guest",
+        lambda self, timeout_s: at_boot_wait.append(len(served)),
+    )
+    guest._reboot()
+    assert at_boot_wait == [5]
+
+
+def test_a_guest_that_never_reboots_fails_instead_of_being_verified(config, agent_server):
+    ROUTES.clear()
+    ROUTES["/execute"] = _execute(f"{_OLD_BOOT}\n")
+    builder = DesktopImageBuilder(
+        DesktopImageBuildConfig(
+            upstream=config.upstream,
+            output=config.output,
+            runtime_dir=config.runtime_dir,
+            boot_timeout_s=0.0,
+        ),
+        log=lambda _: None,
+    )
+    builder._client = image_build.OSWorldClient(agent_server)
+    with pytest.raises(GuestCommandError, match="did not reboot before its deadline"):
+        builder._reboot()
+
+
+def test_a_guest_that_reports_no_boot_id_fails_rather_than_passing_vacuously(guest):
+    ROUTES["/execute"] = _execute(f"{_OLD_BOOT}\n")
+    with pytest.raises(GuestCommandError, match="no boot id"):
+        guest._wait_for_new_boot("", image_build.time.monotonic() + 900.0)
+
+
+def test_reboot_transition_and_readiness_share_one_timeout(guest, monkeypatch):
+    times = iter((10.0, 20.0, 25.0, 30.0))
+    monkeypatch.setattr(image_build.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(guest, "guest_bash", lambda *args, **kwargs: _OLD_BOOT)
+    monkeypatch.setattr(guest, "guest_root_bash", lambda *args, **kwargs: "")
+    deadlines: list[float] = []
+    readiness: list[float] = []
+    monkeypatch.setattr(
+        guest, "_wait_for_new_boot", lambda before, deadline: deadlines.append(deadline)
+    )
+    monkeypatch.setattr(guest, "_wait_for_guest", lambda timeout_s: readiness.append(timeout_s))
+
+    guest._reboot()
+
+    assert deadlines == [920.0]
+    assert readiness == [895.0]
+
+
+# --------------------------------------------------------------------------
 # the manifest
 
 
@@ -596,19 +700,6 @@ def test_the_manifest_records_every_declared_package_and_artifact(config):
     ]
     assert manifest["deliberately_absent"] == list(AGENT_INSTALLED_MODULES)
     assert manifest["guest_server_call"] == PRODUCTION_SERVER_CALL
-
-
-@pytest.mark.parametrize(("overlay", "mode"), [(True, "overlay"), (False, "copy")])
-def test_the_manifest_records_how_the_image_was_made(tmp_path, overlay, mode):
-    upstream = tmp_path / "upstream.qcow2"
-    upstream.write_bytes(b"\x00" * 8)
-    config = DesktopImageBuildConfig(
-        upstream=upstream,
-        output=tmp_path / "out.qcow2",
-        runtime_dir=tmp_path / "run",
-        overlay=overlay,
-    )
-    assert build_manifest(config, BuildReport())["mode"] == mode
 
 
 def test_the_manifest_carries_the_guest_checks_and_stays_json_serialisable(config):
@@ -644,38 +735,106 @@ def _stub_build(monkeypatch, checks: dict) -> None:
 def test_a_verified_build_publishes_the_image_and_a_manifest_beside_it(
     config, monkeypatch
 ):
-    _stub_build(monkeypatch, dict(VERIFICATION_OUTPUT))
+    _stub_build(monkeypatch, dict(VERIFIED_CHECKS))
     manifest = DesktopImageBuilder(config, log=lambda _: None).build()
     assert config.output.read_bytes() == b"QFI\xfb provisioned"
     assert not config.partial_path.exists()
     assert json.loads(config.manifest_path.read_text()) == manifest
 
 
-def test_a_missing_grader_package_does_not_stop_the_image_from_being_published(
+def test_build_flattens_its_source_into_a_self_contained_image(config, monkeypatch):
+    monkeypatch.setattr(
+        DesktopImageBuilder,
+        "_create_overlay",
+        lambda *args: pytest.fail("published builds must not use overlays"),
+    )
+    commands: list[list[str]] = []
+
+    def convert(argv, **kwargs):
+        commands.append(argv)
+        Path(argv[-1]).write_bytes(b"QFI\xfb flattened")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(image_build.subprocess, "run", convert)
+    builder = DesktopImageBuilder(config, log=lambda _: None)
+    builder._create_image(config.partial_path)
+    assert commands == [
+        image_convert_argv(config.qemu_img_binary, config.upstream, config.partial_path)
+    ]
+    assert "-b" not in commands[0]
+    assert config.partial_path.read_bytes() == b"QFI\xfb flattened"
+
+
+def test_a_missing_grader_package_stops_the_image_from_being_published(
     config, monkeypatch
 ):
-    """DEFECT, pinned rather than fixed: ``_verify`` RECORDS what the guest is
-    missing and nothing reads it, so a build whose pip step half-failed publishes
-    an image that scores OSWorld tasks wrong, wearing a manifest that says so.
-    Same for a leaked ``pytest`` in ``agent_installed_modules``, which is scored
-    by its absence.  See the port's report; the gate belongs in ``build()``.
-    """
     _stub_build(
         monkeypatch,
         {
-            **VERIFICATION_OUTPUT,
+            **VERIFIED_CHECKS,
             "missing_modules": ["pandas"],
             "agent_installed_modules": ["pytest"],
         },
     )
-    manifest = DesktopImageBuilder(config, log=lambda _: None).build()
-    assert config.output.is_file()
-    assert manifest["checks"]["missing_modules"] == ["pandas"]
-    assert manifest["checks"]["agent_installed_modules"] == ["pytest"]
+    with pytest.raises(GuestCommandError, match="failed verification") as raised:
+        DesktopImageBuilder(config, log=lambda _: None).build()
+    assert "pandas" in str(raised.value)
+    assert "pytest" in str(raised.value)
+    assert not config.output.exists()
+    assert not config.manifest_path.exists()
+    assert config.partial_path.is_file()
+
+
+@pytest.mark.parametrize("existing", ["output", "manifest_path"])
+def test_build_refuses_to_replace_an_existing_artifact(config, existing):
+    path = getattr(config, existing)
+    path.write_bytes(b"existing")
+    with pytest.raises(FileExistsError, match=str(path)):
+        DesktopImageBuilder(config, log=lambda _: None).build()
+    assert path.read_bytes() == b"existing"
+
+
+def test_verify_only_fails_on_an_invalid_published_image(config, monkeypatch):
+    config.output.write_bytes(b"QFI\xfb published")
+    monkeypatch.setattr(DesktopImageBuilder, "_create_overlay", lambda *args: None)
+    monkeypatch.setattr(DesktopImageBuilder, "_booted", _no_boot)
+    monkeypatch.setattr(
+        DesktopImageBuilder,
+        "_verify",
+        lambda self: {**VERIFIED_CHECKS, "missing_modules": ["pandas"]},
+    )
+    with pytest.raises(GuestCommandError, match="pandas"):
+        DesktopImageBuilder(config, log=lambda _: None).verify_only()
+
+
+@pytest.mark.parametrize(
+    ("spoiled", "named"),
+    [
+        ({"missing_modules": ["pandas"]}, "pandas"),
+        ({"agent_installed_modules": ["pytest"]}, "pytest"),
+        ({"tools": {**VERIFICATION_OUTPUT["tools"], "xcf2png": None}}, "xcf2png"),
+        ({"production_server_call": False}, "debug call"),
+        ({"reloader_disabled": {**RELOADER_OUTPUT, "pids_stable": False}}, "restarted"),
+        (
+            {"reloader_disabled": {**RELOADER_OUTPUT, "concurrent": False}},
+            "site-packages write",
+        ),
+    ],
+)
+def test_every_fact_the_guest_sends_back_can_refuse_publication(spoiled, named):
+    failures = image_build._verification_failures({**VERIFIED_CHECKS, **spoiled})
+    assert len(failures) == 1, failures
+    assert named in failures[0]
+
+
+def test_a_fact_the_probe_stopped_sending_fails_closed():
+    checks = dict(VERIFIED_CHECKS)
+    del checks["missing_modules"]
+    assert image_build._verification_failures(checks) != []
 
 
 def test_the_upstream_image_is_never_touched_by_a_build(config, monkeypatch):
     before = config.upstream.read_bytes()
-    _stub_build(monkeypatch, dict(VERIFICATION_OUTPUT))
+    _stub_build(monkeypatch, dict(VERIFIED_CHECKS))
     DesktopImageBuilder(config, log=lambda _: None).build()
     assert config.upstream.read_bytes() == before
