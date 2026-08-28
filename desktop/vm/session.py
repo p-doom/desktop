@@ -25,6 +25,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -33,6 +34,17 @@ from .osworld_client import OSWorldClient
 from .runtime import Runtime
 
 GUEST_JSON_MARKER = "DESKTOP_ENV_JSON="
+
+
+class DesktopResetMode(StrEnum):
+    """How far back a reset rewinds the guest before the next episode."""
+
+    #: Restore the checkpoint.  The only mode that produces a ``ResetReceipt``,
+    #: because it is the only one where there is a rewind to attest.
+    SNAPSHOT = "snapshot"
+    #: Leave the guest running and only drop believed input state.  For a task
+    #: whose expensive setup -- a warm browser, say -- must survive the boundary.
+    LOGICAL = "logical"
 
 
 class SessionError(RuntimeError):
@@ -317,11 +329,38 @@ class DesktopSession:
             raise SessionError("session is not started")
         return GuestScript(self.client)
 
-    def reset(self) -> HttpGuiTransport:
-        """Reset to the clean checkpoint and consume the receipt for you."""
+    def reset(
+        self, *, mode: DesktopResetMode = DesktopResetMode.SNAPSHOT
+    ) -> HttpGuiTransport:
+        """Prepare the guest for the next episode, per ``mode``.
+
+        ``SNAPSHOT`` resets to the clean checkpoint and consumes the receipt for
+        you.  ``LOGICAL`` does not touch the runtime at all, so there is no
+        rewind, no receipt, and no reset sequence to advance -- what it still
+        guarantees is the fresh transport.
+        """
+        if mode is DesktopResetMode.LOGICAL:
+            return self._logical_reset()
         transport, receipt = self.reset_with_receipt()
         self.consume_receipt(receipt)
         return transport
+
+    def _logical_reset(self) -> HttpGuiTransport:
+        """Hand back a fresh transport over the still-running guest.
+
+        A button believed held before the boundary must not be believed held
+        after it, and a fresh transport is a fresh audit.  That is the whole of
+        a logical reset: the runtime is deliberately not touched.
+        """
+        if not self._started or self.client is None:
+            raise SessionError("session is not started")
+        if self._outstanding_receipt_sha256 is not None:
+            raise SessionError(
+                "the previous reset receipt must be consumed before another reset"
+            )
+        base_url = self.transport.base_url if self.transport else ""
+        self.transport = HttpGuiTransport(base_url, timeout_s=self.transport_timeout_s)
+        return self._require_transport()
 
     def reset_with_receipt(self) -> tuple[HttpGuiTransport, ResetReceipt]:
         """Reset, and hand back proof that the guest actually rewound."""
@@ -591,6 +630,7 @@ class DesktopSession:
 
 
 __all__ = [
+    "DesktopResetMode",
     "DesktopSession",
     "GuestScript",
     "ResetReceipt",
