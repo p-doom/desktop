@@ -12,13 +12,16 @@ from .factory import (
     build_qemu_runtime,
     qemu_session_factory,
 )
-from .osworld_client import GuestAgentError, OSWorldClient
+from .osworld_client import GuestAgentError, GuestCommandResult, OSWorldClient
 from .pool import (
+    HUB_PORT_RANGE,
     CheckedOutDesktopSession,
     DesktopPoolConfig,
     DesktopSessionPool,
     PortLease,
+    PortRangeLease,
     WorkerPorts,
+    acquire_port_range,
     allocate_worker_ports,
 )
 from .qemu import QemuError, QemuRuntime, QmpClient, kvm_available
@@ -45,10 +48,17 @@ from .sandbox_protocol import (
     SupportsSandboxEndpoint,
     TransferTooLargeError,
 )
-from .session import DesktopSession, GuestScript, ResetReceipt, SessionError
+from .session import (
+    DesktopResetMode,
+    DesktopSession,
+    GuestScript,
+    ResetReceipt,
+    SessionError,
+)
 
 __all__ = [
     "DEFAULT_TRANSFER_TIMEOUT_S",
+    "HUB_PORT_RANGE",
     "MAX_TRANSFER_BYTES",
     "ApptainerSandboxProvider",
     "Checkpoint",
@@ -56,13 +66,16 @@ __all__ = [
     "ConfigError",
     "ConnectableProvider",
     "DesktopPoolConfig",
+    "DesktopResetMode",
     "DesktopSession",
     "DesktopSessionPool",
     "GuestAgentError",
+    "GuestCommandResult",
     "GuestPorts",
     "GuestScript",
     "OSWorldClient",
     "PortLease",
+    "PortRangeLease",
     "QemuError",
     "QemuRuntime",
     "QmpClient",
@@ -83,6 +96,7 @@ __all__ = [
     "SupportsSandboxEndpoint",
     "TransferTooLargeError",
     "WorkerPorts",
+    "acquire_port_range",
     "allocate_worker_ports",
     "build_desktop_pool",
     "build_desktop_session",

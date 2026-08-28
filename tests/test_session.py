@@ -23,6 +23,7 @@ import pytest
 
 from desktop.vm.runtime import Checkpoint, GuestPorts, RuntimeState
 from desktop.vm.session import (
+    DesktopResetMode,
     DesktopSession,
     GuestScript,
     ResetReceipt,
@@ -126,6 +127,57 @@ def session(tmp_path):
     yield session
     if session._started:
         session.close()
+
+
+def test_a_snapshot_reset_rewinds_the_runtime_and_settles_its_receipt(session):
+    transport = session.reset(mode=DesktopResetMode.SNAPSHOT)
+    assert session.runtime.restores == ["base"]
+    assert session._reset_sequence == 1
+    assert session._outstanding_receipt_sha256 is None
+    assert transport is session.transport
+
+
+def test_the_default_reset_mode_is_the_one_that_rewinds(session):
+    """A caller that says nothing must get the strong guarantee, not the weak
+    one: the guest keeping state across an episode is silent contamination."""
+    session.reset()
+    assert session.runtime.restores == ["base"]
+
+
+def test_a_logical_reset_leaves_the_guest_running(session):
+    """For a task whose expensive setup -- a warm browser -- must survive the
+    boundary.  Nothing rewinds, so there is nothing to attest and no sequence to
+    advance, and the sentinel is never planted."""
+    before = session.transport
+    transport = session.reset(mode=DesktopResetMode.LOGICAL)
+    assert session.runtime.restores == []
+    assert session._reset_sequence == 0
+    assert session._outstanding_receipt_sha256 is None
+    assert session.client.programs == []
+    assert transport is session.transport
+    assert transport is not before, "held input state must not cross the boundary"
+    assert transport.base_url == before.base_url
+
+
+def test_a_logical_reset_is_refused_while_a_receipt_is_outstanding(session):
+    """The two modes share one reset slot, so an unconsumed snapshot receipt must
+    not be stranded by a logical reset taken on top of it."""
+    session.reset_with_receipt()
+    with pytest.raises(SessionError, match="must be consumed before another reset"):
+        session.reset(mode=DesktopResetMode.LOGICAL)
+
+
+def test_a_logical_reset_on_an_unstarted_session_is_refused(tmp_path):
+    session = DesktopSession(FakeRuntime(), scratch_root=tmp_path, require_single_task=False)
+    with pytest.raises(SessionError, match="session is not started"):
+        session.reset(mode=DesktopResetMode.LOGICAL)
+
+
+def test_a_reset_mode_is_its_wire_value(session):
+    """The mode crosses to a consumer as a string, so the member and the string
+    a caller writes in a config have to be the same thing."""
+    assert DesktopResetMode("logical") is DesktopResetMode.LOGICAL
+    assert DesktopResetMode.SNAPSHOT == "snapshot"
 
 
 def test_a_reset_produces_a_receipt_describing_it(session):

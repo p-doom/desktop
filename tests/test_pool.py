@@ -24,6 +24,7 @@ from desktop.vm.pool import (
     DesktopPoolConfig,
     DesktopSessionPool,
     PortLease,
+    PortRangeLease,
     WorkerPorts,
     ports_for_worker,
 )
@@ -53,14 +54,6 @@ def fake_allocator_factory(tmp_path: Path):
     counter = {"slot": 0}
     released: list[int] = []
 
-    class FakeLockFile:
-        def __init__(self, slot: int) -> None:
-            self.slot = slot
-            self.closed = False
-
-        def close(self) -> None:
-            self.closed = True
-
     class FakeLease(PortLease):
         def release(self) -> None:
             if self._released:
@@ -75,12 +68,19 @@ def fake_allocator_factory(tmp_path: Path):
         logdir = Path(log_dir) / f"w{slot}"
         workdir.mkdir(parents=True, exist_ok=True)
         logdir.mkdir(parents=True, exist_ok=True)
+        ports = ports_for_worker(50000, slot)
         return FakeLease(
-            ports=ports_for_worker(50000, slot),
+            ports=ports,
             slot=slot,
             workdir=workdir,
             logdir=logdir,
-            _lock_file=FakeLockFile(slot),  # type: ignore[arg-type]
+            _range_lease=PortRangeLease(
+                start=ports.server,
+                count=10,
+                lock_dir=Path(lock_dir),
+                purpose="fake",
+                _lock_files=(),
+            ),
         )
 
     allocate.released = released  # type: ignore[attr-defined]
@@ -275,6 +275,24 @@ def test_a_checked_out_session_is_a_context_manager(pool_factory):
     with pool.checkout(timeout_s=5) as handle:
         assert handle.env is not None
     assert pool.snapshot()["leased"] == 0
+
+
+def test_a_checked_out_session_exposes_the_block_its_lease_holds(pool_factory):
+    """A caller that starts a host-side service beside the desktop needs a port
+    nothing else was given, and the lease is the only thing that knows which."""
+    pool = pool_factory(min_ready_sessions=1)
+    pool.start()
+    with pool.checkout(timeout_s=5) as handle:
+        assert isinstance(handle.ports, WorkerPorts)
+        assert handle.ports == handle.env.lease.ports
+        assert handle.ports.auxiliary_port() == handle.ports.server + 4
+
+
+def test_two_checked_out_sessions_never_share_an_auxiliary_port(pool_factory):
+    pool = pool_factory(min_ready_sessions=2, max_sessions=2)
+    pool.start()
+    with pool.checkout(timeout_s=5) as first, pool.checkout(timeout_s=5) as second:
+        assert set(first.ports.all()).isdisjoint(second.ports.all())
 
 
 def test_an_exception_inside_the_context_retires_the_session(pool_factory):
