@@ -48,7 +48,6 @@ from desktop.vm.pool import (
 from desktop.vm.qemu import QemuError, QemuRuntime
 from desktop.vm.runtime import GuestPorts
 
-
 _PORT_WINDOW = itertools.count()
 
 
@@ -661,13 +660,18 @@ def test_the_pooled_factory_passes_the_flag_through(port_base, tmp_path, image, 
         "build_desktop_session",
         lambda **kwargs: seen.update(kwargs) or type("S", (), {"start": lambda s: None})(),
     )
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     try:
         qemu_session_factory(image=image, startup_timeout_s=1200.0)(lease)
         assert seen["require_single_task"] is False
-        qemu_session_factory(image=image, startup_timeout_s=1200.0, require_single_task=True)(lease)
+        qemu_session_factory(
+            image=image, startup_timeout_s=1200.0, require_single_task=True
+        )(lease)
         assert seen["require_single_task"] is True
     finally:
         lease.release()
@@ -809,7 +813,10 @@ def test_the_lease_workdir_becomes_the_session_scratch_root(
 def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
     from desktop.vm.pool import DesktopPoolSession, _close_session_resources
 
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     closed = []
@@ -826,7 +833,10 @@ def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
     assert closed == [1]
     assert lease._released is True
     # ... and the slot is immediately reusable.
-    again = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    again = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     try:
@@ -836,7 +846,10 @@ def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
 
 
 def test_a_lease_release_is_idempotent(port_base, tmp_path):
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     lease.release()
@@ -845,7 +858,10 @@ def test_a_lease_release_is_idempotent(port_base, tmp_path):
 
 
 def test_a_lease_is_a_context_manager(port_base, tmp_path):
-    with allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    with allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     ) as lease:
         assert isinstance(lease, PortLease)
@@ -890,7 +906,10 @@ def test_a_released_lease_removes_its_own_working_directory(port_base, tmp_path)
 def test_a_lease_whose_scratch_is_not_empty_is_left_alone(port_base, tmp_path):
     """``rmdir``, not ``rmtree``: a session that failed to clean up its own scratch
     must leave visible evidence rather than have it silently deleted."""
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     leftover = lease.workdir / "desktop-env-something" / "evidence.txt"

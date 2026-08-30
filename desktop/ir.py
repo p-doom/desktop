@@ -41,7 +41,7 @@ class Operation:
         return {"kind": self.kind, "args": list(self.args)}
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "Operation":
+    def from_dict(cls, payload: dict[str, Any]) -> Operation:
         """The inverse of ``as_dict``.
 
         Both keys are required, so a truncated receipt cannot become a

@@ -565,7 +565,7 @@ class StartingDesktopSession:
 class CheckedOutDesktopSession[DesktopEnvT: DesktopSessionEnv]:
     def __init__(
         self,
-        pool: "DesktopSessionPool[DesktopEnvT]",
+        pool: DesktopSessionPool[DesktopEnvT],
         session: DesktopPoolSession[DesktopEnvT],
     ) -> None:
         self._pool = pool

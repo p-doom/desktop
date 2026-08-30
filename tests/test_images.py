@@ -134,10 +134,10 @@ def test_the_kvm_tier_still_checks_for_the_qemu_BINARY_by_its_real_name(kvm_text
     test_section = _section(kvm_text, "test")
     assert "command -v qemu-system-x86_64" in test_section
     assert "command -v qemu-img" in test_section
-    from desktop.vm.factory import build_qemu_runtime  # noqa: F401
     import inspect
 
     from desktop.vm import factory
+    from desktop.vm.factory import build_qemu_runtime  # noqa: F401
 
     assert '"qemu-system-x86_64"' in inspect.getsource(factory)
 

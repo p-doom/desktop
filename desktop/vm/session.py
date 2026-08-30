@@ -621,7 +621,7 @@ class DesktopSession:
         if errors and sys.exc_info()[0] is None:
             raise SessionError("; ".join(errors))
 
-    def __enter__(self) -> "DesktopSession":
+    def __enter__(self) -> DesktopSession:
         self.start()
         return self
 
