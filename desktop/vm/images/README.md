@@ -1,61 +1,41 @@
-# Apptainer definitions
+# VM image tiers
 
-Two tiers, and the difference between them decides whether a number is real.
+| tier | definition | purpose |
+| --- | --- | --- |
+| KVM | `osworld-guest-kvm.def` | **full** parity from a pinned guest qcow2; required for benchmark and timing runs |
+| non-KVM | `desktop-nonkvm.def` | **none, ever**; Xvfb-based executor and transport checks only |
 
-| tier | def-file | needs `/dev/kvm` | benchmark parity | what it is for |
-|---|---|---|---|---|
-| KVM | `osworld-guest-kvm.def` | yes (else silent TCG fallback) | **full** — set by the pinned guest image, not by the container | every measurement that will be reported |
-| non-KVM | `desktop-nonkvm.def` | no | **none, ever** | plumbing iteration: transport, executor, readiness, pool |
+## KVM
 
-## Why the KVM container has no desktop in it
+The container contains QEMU and its host-side tools, not a desktop. Bind the
+guest qcow2 read-only and provide a writable `TMPDIR` for QEMU state. The
+runtime requires readable and writable `/dev/kvm`; TCG is used only when the
+caller explicitly requests it.
 
-The guest desktop lives in a pinned qcow2 that this container *boots*, bound in
-read-only at run time. Application versions, the in-VM agent, and the display
-geometry are what determine what a benchmark number means, so they must be an
-artifact a container rebuild cannot change. Baking a desktop into the image would
-make every `apptainer build` a silent change to the benchmark.
+`desktop.vm.DesktopImageBuilder` provisions an upstream qcow2, verifies the
+guest agent and grader dependencies, and publishes the image with a sibling
+`.build.json` manifest. It refuses to overwrite either input or output.
 
-## Why the non-KVM tier is not a shortcut
+## Non-KVM
 
-`desktop-nonkvm.def` is translated from `anthropics/claude-quickstarts`
-`computer-use-demo` (MIT): Xvfb, x11vnc, xdotool, mutter, tint2, noVNC, non-root,
-no privileged flags. It is an apps-on-a-desktop runtime — LibreOffice, gedit,
-pcmanfm, galculator, xpdf, and **no browser** (see below). It has no OSWorld guest
-agent, no OSWorld task setup, and different application versions. It is a tier
-*beneath* the KVM tier and never a replacement for it. Anything measured here is a
-plumbing check, not a result.
-
-It is still worth having: it runs on any node, starts in seconds, and has
-`python-xlib`, so a guest program compiled by
-`desktop/execute/guest_program.py` executes there. PyAutoGUI remains installed
-only for OSWorld setup/evaluator code. `xdotool` is a differential test oracle,
-not an executor path.
+The non-KVM image provides Xvfb, a window manager, and Python Xlib. Guest input
+uses XTEST through `python-xlib`; PyAutoGUI is retained for OSWorld setup and
+evaluator code, and `xdotool` is a differential test oracle. This image has no
+OSWorld guest agent.
 
 ## Flagged, not faked
 
-* **There is no browser in the non-KVM tier, and adding one is not a package
-  name.** On `ubuntu:22.04`, `chromium-browser` has *no installation candidate*
-  (it is a snap transitional stub), `chromium` does not exist, and `firefox` is
-  `1:1snap1-0ubuntu2` — also a snap stub. Snaps need systemd and a writable
-  `/snap`, neither of which an Apptainer instance has. A browser therefore means a
-  third-party PPA or an upstream tarball: a supply-chain decision. Until one is
-  made, **this tier cannot check anything browser-shaped.** Whoever adds a browser
-  will need a writable profile directory — a `.sif` is read-only, so
-  `--writable-tmpfs` (which `ApptainerSandboxProvider` passes by default) or an
-  explicit `--overlay`; a startup crash naming the profile directory is that.
-* **`apptainer instance start` does not behave like a Docker `ENTRYPOINT`.**
-  `%startscript` backgrounds the X stack; a non-daemonising service is the usual
-  cause of an instance that is up with no display. Check `/tmp/x11vnc.log`,
-  `/tmp/mutter.log`.
-* **`%test` in both files is weak on purpose.** It runs at build time, with no
-  instance and no `/dev/kvm`, so it can only assert that binaries and imports are
-  present. Everything behavioural is checked at run time.
+The non-KVM tier has **no browser**. Ubuntu reports "no installation candidate"
+for Chromium, and the available Chromium and Firefox packages are snap
+transitional stubs that cannot run in this image.
 
-## Building
+This tier cannot check anything browser-shaped.
 
-```
-apptainer build osworld-guest-kvm.sif  osworld-guest-kvm.def
-apptainer build desktop-nonkvm.sif     desktop-nonkvm.def
+## Build
+
+```bash
+apptainer build osworld-guest-kvm.sif osworld-guest-kvm.def
+apptainer build desktop-nonkvm.sif desktop-nonkvm.def
 ```
 
-Neither build needs `--fakeroot` on a system with unprivileged user namespaces.
+The definitions require neither `--fakeroot` nor privileged build flags.
