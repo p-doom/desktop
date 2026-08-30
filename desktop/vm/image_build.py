@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .observation import OBSERVATION_CONTRACT
+from .observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
 from .osworld_client import GuestAgentError, OSWorldClient
 from .pool import allocate_worker_ports, node_port_lock_dir
 from .qemu import QemuError, QmpClient
@@ -415,6 +415,7 @@ class DesktopImageBuilder:
         self._create_overlay(self.config.output, probe)
         try:
             with self._booted(probe):
+                self._wait_for_guest(self.config.boot_timeout_s)
                 self.report.checks.update(self._verify())
             _require_verified(self.report.checks, self.config.output)
         finally:
@@ -468,9 +469,9 @@ class DesktopImageBuilder:
                 self._qmp_path = qmp
                 try:
                     started = time.monotonic()
-                    self._wait_for_guest(config.boot_timeout_s)
+                    self._wait_for_agent(config.boot_timeout_s)
                     self.report.record("boot", time.monotonic() - started)
-                    self.log(f"guest ready in {self.report.steps['boot']}s")
+                    self.log(f"guest agent ready in {self.report.steps['boot']}s")
                     yield
                 finally:
                     self._power_down()
@@ -538,6 +539,29 @@ class DesktopImageBuilder:
         if self._qmp_path is None:
             raise GuestCommandError("The QMP socket is not configured")
         return self._qmp_path
+
+    def _wait_for_agent(self, timeout_s: float) -> None:
+        process = self._require_process()
+        client = self._require_client()
+        deadline = time.monotonic() + timeout_s
+        detail = "no screen size yet"
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise GuestCommandError(
+                    f"QEMU exited with {process.returncode} before the guest answered"
+                )
+            try:
+                size = client.screen_size()
+            except GuestAgentError as error:
+                detail = repr(error)
+            else:
+                detail = f"screen_size={size}"
+                if size == OBSERVATION_SIZE:
+                    return
+            time.sleep(3)
+        raise GuestCommandError(
+            f"The guest agent was not ready within {timeout_s}s ({detail})"
+        )
 
     def _wait_for_guest(self, timeout_s: float) -> None:
         """Wait for a guest with a DESKTOP, not merely a guest that answers 200.

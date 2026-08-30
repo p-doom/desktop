@@ -639,6 +639,20 @@ class _FakeProcess:
         return self.returncode
 
 
+def test_the_initial_agent_wait_uses_geometry_without_accepting_upstream_png(
+    guest, monkeypatch
+):
+    monkeypatch.setattr(image_build.time, "sleep", lambda _: None)
+    guest._process = _FakeProcess()
+    ROUTES["/screen_size"] = (
+        200,
+        json.dumps({"width": 1920, "height": 1080}),
+        "application/json",
+    )
+    ROUTES["/screenshot"] = (200, b"upstream PNG", "image/png")
+    guest._wait_for_agent(1.0)
+
+
 def test_a_qemu_that_exited_fails_the_boot_wait_instead_of_polling_it_out(guest):
     guest._process = _FakeProcess(returncode=1)
     with pytest.raises(GuestCommandError, match="QEMU exited with 1"):
@@ -866,6 +880,7 @@ def test_verify_only_fails_on_an_invalid_published_image(config, monkeypatch):
     config.output.write_bytes(b"QFI\xfb published")
     monkeypatch.setattr(DesktopImageBuilder, "_create_overlay", lambda *args: None)
     monkeypatch.setattr(DesktopImageBuilder, "_booted", _no_boot)
+    monkeypatch.setattr(DesktopImageBuilder, "_wait_for_guest", lambda *args: None)
     monkeypatch.setattr(
         DesktopImageBuilder,
         "_verify",
