@@ -336,7 +336,13 @@ def _de_temp_keycode():
     }
     _info=_de_display.display.info
     for _code in range(int(_info.max_keycode),int(_info.min_keycode)-1,-1):
-        if _code not in _held and _code not in _modifiers and _code not in _de_touched_keycodes:
+        _mapping=_de_display.get_keyboard_mapping(_code,1)[0]
+        if (
+            not any(int(value) for value in _mapping)
+            and _code not in _held
+            and _code not in _modifiers
+            and _code not in _de_touched_keycodes
+        ):
             return _code
     raise RuntimeError('no temporary non-modifier keycode is available')
 
@@ -379,7 +385,7 @@ def _de_type_text(text):
                 int(value)
                 for value in _de_display.get_keyboard_mapping(_keycode,1)[0]
             )
-            if _observed!=_replacement:
+            if not _observed or _observed[0]!=int(_keysym):
                 raise RuntimeError('temporary keysym mapping did not take effect')
             _de_fake_input(X.KeyPress,_keycode,phase='unicode_down')
             _de_fake_input(X.KeyRelease,_keycode,phase='unicode_up')
