@@ -5,18 +5,13 @@
  import ctypes
  import os
  import platform
-@@ -71,6 +72,7 @@
- logger = app.logger
- recording_process = None  # fixme: this is a temporary solution for recording, need to be changed to support multiple-process
- recording_path = "/tmp/recording.mp4"
-+OBSERVATION_CONTRACT = "osworld_cursor_jpeg_q92_420_1920x1080_v1"
+@@ -258,81 +259,29 @@
+         return "{:} launched successfully".format(command if shell else " ".join(command))
+     except Exception as e:
+         return jsonify({"status": "error", "message": str(e)}), 500
 -
 -
 +
-+
- @app.route('/setup/execute', methods=['POST'])
-@@ -262,75 +264,22 @@
--
 +
  @app.route('/screenshot', methods=['GET'])
  def capture_screen_with_cursor():
@@ -75,13 +70,13 @@
 -
 -        img.save(file_path)
 -    elif user_platform == "Linux":
--        with Xcursor() as cursor_obj:
--            imgarray = cursor_obj.getCursorImageArrayFast()
--            cursor_img = Image.fromarray(imgarray)
--            screenshot = pyautogui.screenshot()
--            cursor_x, cursor_y = pyautogui.position()
--            screenshot.paste(cursor_img, (cursor_x, cursor_y), cursor_img)
--            screenshot.save(file_path)
+-        cursor_obj = Xcursor()
+-        imgarray = cursor_obj.getCursorImageArrayFast()
+-        cursor_img = Image.fromarray(imgarray)
+-        screenshot = pyautogui.screenshot()
+-        cursor_x, cursor_y = pyautogui.position()
+-        screenshot.paste(cursor_img, (cursor_x, cursor_y), cursor_img)
+-        screenshot.save(file_path)
 -    elif user_platform == "Darwin":  # (Mac OS)
 -        # Use the screencapture utility to capture the screen with the cursor
 -        subprocess.run(["screencapture", "-C", file_path])
@@ -89,15 +84,18 @@
 -        logger.warning(f"The platform you're using ({user_platform}) is not currently supported")
 -
 -    return send_file(file_path, mimetype='image/png')
-+    with Xcursor() as cursor_obj:
-+        cursor_img = Image.fromarray(cursor_obj.getCursorImageArrayFast())
-+        screenshot = pyautogui.screenshot()
-+        cursor_x, cursor_y = pyautogui.position()
-+        screenshot.paste(cursor_img, (cursor_x, cursor_y), cursor_img)
+-
+-
++    cursor_obj = Xcursor()
++    cursor_img = Image.fromarray(cursor_obj.getCursorImageArrayFast())
++    screenshot = pyautogui.screenshot()
++    cursor_x, cursor_y = pyautogui.position()
++    screenshot.paste(cursor_img, (cursor_x, cursor_y), cursor_img)
 +    screenshot = screenshot.convert("RGB")
 +    if screenshot.size != (1920, 1080):
 +        raise RuntimeError(
-+            f"{OBSERVATION_CONTRACT} requires a 1920x1080 desktop, got {screenshot.size}"
++            "osworld_cursor_jpeg_q92_420_1920x1080_v1 requires a "
++            f"1920x1080 desktop, got {screenshot.size}"
 +        )
 +    encoded = io.BytesIO()
 +    screenshot.save(
@@ -105,8 +103,8 @@
 +    )
 +    encoded.seek(0)
 +    return send_file(encoded, mimetype="image/jpeg")
--
--
 +
 +
  def _has_active_terminal(desktop: Accessible) -> bool:
+     """ A quick check whether the terminal window is open and active.
+     """
