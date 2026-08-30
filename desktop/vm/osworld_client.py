@@ -2,7 +2,7 @@
 
 The in-VM agent exposes a small Flask app.  Of it, exactly four endpoints matter:
 
-    GET  /screenshot      -> raw PNG bytes (full desktop framebuffer)
+    GET  /screenshot      -> raw cursor-composited JPEG bytes (1920x1080 RGB)
     POST /screen_size     -> {"width": int, "height": int}
     POST /execute         -> {"command": [...], "shell": false}; the server runs a
                              subprocess and does NOT eval strings
@@ -12,8 +12,7 @@ There is no dispatch here and no key tables: dispatch belongs to a codec and an
 executor, and the key tables live in ``desktop.execute.keymap``.  This is a
 transport.
 
-Screenshots are handed back as PNG bytes, never as decoded images -- only the
-caller knows whether it wants a tensor, a thumbnail, or a byte-for-byte hash.
+Screenshots are validated with Pillow, then handed back unchanged as JPEG bytes.
 
 HTTP is ``urllib.request``: no ``requests``, no session object, no dependency.
 """
@@ -22,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import io
 import json
 import logging
 import time
@@ -31,6 +31,10 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from PIL import Image
+
+from .observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
 
 _LOG = logging.getLogger("desktop.vm.osworld_client")
 
@@ -110,7 +114,7 @@ class OSWorldClient:
         *,
         payload: dict[str, Any] | None = None,
         timeout_s: float | None = None,
-    ) -> tuple[int, bytes]:
+    ) -> tuple[int, bytes, str]:
         data = None
         headers: dict[str, str] = {}
         if payload is not None:
@@ -123,9 +127,13 @@ class OSWorldClient:
             with urllib.request.urlopen(
                 request, timeout=self.timeout_s if timeout_s is None else timeout_s
             ) as response:
-                return int(response.status), response.read()
+                return (
+                    int(response.status),
+                    response.read(),
+                    response.headers.get_content_type(),
+                )
         except urllib.error.HTTPError as exc:
-            return int(exc.code), exc.read()
+            return int(exc.code), exc.read(), exc.headers.get_content_type()
         except (urllib.error.URLError, OSError) as exc:
             raise GuestAgentError(f"guest request {method} {path} failed: {exc}") from exc
 
@@ -137,7 +145,7 @@ class OSWorldClient:
         payload: dict[str, Any] | None = None,
         timeout_s: float | None = None,
     ) -> Any:
-        status, body = self._request(method, path, payload=payload, timeout_s=timeout_s)
+        status, body, _ = self._request(method, path, payload=payload, timeout_s=timeout_s)
         if status != 200:
             raise GuestAgentError(
                 f"guest {method} {path} returned {status}: {body[:200]!r}"
@@ -158,8 +166,11 @@ class OSWorldClient:
         last_log = 0.0
         while time.time() - started < timeout_s:
             try:
-                status, body = self._request("GET", "/screenshot", timeout_s=5.0)
-                if status == 200 and body:
+                status, body, content_type = self._request(
+                    "GET", "/screenshot", timeout_s=5.0
+                )
+                if status == 200:
+                    self._validate_screenshot(content_type, body)
                     _LOG.info("guest ready after %.1fs", time.time() - started)
                     return
             except GuestAgentError:
@@ -174,11 +185,39 @@ class OSWorldClient:
         )
 
     def screenshot(self) -> bytes:
-        """Raw PNG bytes of the whole framebuffer.  Undecoded, on purpose."""
-        status, body = self._request("GET", "/screenshot")
+        """Raw bytes in the one canonical desktop observation contract."""
+        status, body, content_type = self._request("GET", "/screenshot")
         if status != 200 or not body:
             raise GuestAgentError(f"guest /screenshot returned {status} ({len(body)}B)")
+        self._validate_screenshot(content_type, body)
         return body
+
+    @staticmethod
+    def _validate_screenshot(content_type: str, body: bytes) -> None:
+        if content_type != "image/jpeg":
+            raise GuestAgentError(
+                f"guest /screenshot returned {content_type!r}, not image/jpeg"
+            )
+        if not body.startswith(b"\xff\xd8") or not body.endswith(b"\xff\xd9"):
+            raise GuestAgentError("guest /screenshot returned invalid JPEG framing")
+        try:
+            with Image.open(io.BytesIO(body)) as image:
+                image.verify()
+            with Image.open(io.BytesIO(body)) as image:
+                image.load()
+                if image.mode != "RGB":
+                    raise GuestAgentError(
+                        f"{OBSERVATION_CONTRACT} requires RGB, got {image.mode!r}"
+                    )
+                if image.size != OBSERVATION_SIZE:
+                    raise GuestAgentError(
+                        f"{OBSERVATION_CONTRACT} requires {OBSERVATION_SIZE}, "
+                        f"got {image.size}"
+                    )
+        except GuestAgentError:
+            raise
+        except Exception as exc:
+            raise GuestAgentError("guest /screenshot returned an invalid JPEG") from exc
 
     def screen_size(self) -> tuple[int, int]:
         payload = self._request_json("POST", "/screen_size", payload={})
@@ -334,7 +373,7 @@ class OSWorldClient:
         accepted spellings means a guest that renames the field keeps "working"
         while returning the wrong slice.
         """
-        status, body = self._request("GET", "/accessibility")
+        status, body, _ = self._request("GET", "/accessibility")
         if status != 200:
             raise GuestAgentError(f"guest /accessibility returned {status}")
         try:
@@ -383,10 +422,8 @@ class OSWorldClient:
         case this waits the full ``stability_timeout_s`` and returns the last
         frame.
 
-        Note the comparison is on PNG *bytes*, so it is sensitive to encoder
-        nondeterminism in a way a pixel comparison would not be.  On the pinned
-        guest the encoder is deterministic; a caller on another guest that sees
-        spurious instability should decode and compare pixels itself.
+        Comparison is on the canonical JPEG bytes. Its real-guest encoder
+        determinism must be established before using a nonzero stability wait.
         """
         if min_delay_s > 0:
             time.sleep(min_delay_s)

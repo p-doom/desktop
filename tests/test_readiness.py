@@ -19,17 +19,16 @@ import io
 import random
 
 import pytest
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from desktop.vm import readiness as R
 from desktop.vm.readiness import (
     DEFAULT_THUMBNAIL_SIZE,
     ScreenshotStatus,
     desktop_screenshot_ready,
-    png_luma_samples,
+    screenshot_luma_samples,
     wait_for_screenshot_ready,
 )
-
 
 
 def _png(image: Image.Image) -> bytes:
@@ -38,12 +37,12 @@ def _png(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _flat(value: int, size=(1920, 1080)) -> bytes:
     return _png(Image.new("L", size, value))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _per_pixel_noise(size=(1920, 1080), seed=0) -> bytes:
     random.seed(seed)
     image = Image.new("L", size)
@@ -51,7 +50,7 @@ def _per_pixel_noise(size=(1920, 1080), seed=0) -> bytes:
     return _png(image)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _desktop_like(size=(1920, 1080)) -> bytes:
     """A dark desktop with a bright panel and a bright window: real structure."""
     image = Image.new("L", size, 18)
@@ -64,7 +63,7 @@ def _desktop_like(size=(1920, 1080)) -> bytes:
     return _png(image)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _point_sampler(data: bytes, size=DEFAULT_THUMBNAIL_SIZE) -> list[int]:
     """The hand-rolled variant the module warns about: samples, never averages."""
     image = Image.open(io.BytesIO(data)).convert("L")
@@ -85,7 +84,7 @@ def test_the_calibrated_thumbnail_size_is_unchanged():
 
 
 def test_the_sampler_downsamples_to_the_calibrated_pixel_count():
-    assert len(png_luma_samples(_flat(0))) == 160 * 90
+    assert len(screenshot_luma_samples(_flat(0))) == 160 * 90
 
 
 def test_the_sampler_averages_rather_than_point_sampling():
@@ -94,11 +93,11 @@ def test_the_sampler_averages_rather_than_point_sampling():
     size = (1920, 1080)
     image = Image.new("L", size)
     image.putdata([255 if index % 2 else 0 for index in range(size[0] * size[1])])
-    samples = png_luma_samples(_png(image))
+    samples = screenshot_luma_samples(_png(image))
     assert set(samples) <= {126, 127, 128, 129}, sorted(set(samples))[:8]
 
 
-def test_the_sampler_is_not_restricted_to_png_despite_its_name():
+def test_the_sampler_accepts_jpeg():
     buffer = io.BytesIO()
     Image.open(io.BytesIO(_desktop_like())).convert("RGB").save(buffer, format="JPEG")
     status, _ = desktop_screenshot_ready(buffer.getvalue())
@@ -106,8 +105,8 @@ def test_the_sampler_is_not_restricted_to_png_despite_its_name():
 
 
 def test_the_sampler_raises_on_undecodable_bytes():
-    with pytest.raises(Exception):
-        png_luma_samples(b"not-an-image")
+    with pytest.raises(UnidentifiedImageError):
+        screenshot_luma_samples(b"not-an-image")
 
 
 def test_a_point_sampling_variant_would_silently_drift_off_calibration():
@@ -127,7 +126,7 @@ def test_a_point_sampling_variant_would_silently_drift_off_calibration():
 
 
 def test_the_averaged_stddev_of_per_pixel_noise_sits_below_the_threshold():
-    samples = png_luma_samples(_per_pixel_noise())
+    samples = screenshot_luma_samples(_per_pixel_noise())
     mean = sum(samples) / len(samples)
     stddev = (sum((value - mean) ** 2 for value in samples) / len(samples)) ** 0.5
     assert stddev < R.DESKTOP_READY_MIN_LUMA_STDDEV
