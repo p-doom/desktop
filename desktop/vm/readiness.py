@@ -10,8 +10,7 @@ means not ready; either one alone is not enough, because a solid grey screen is
 bright but flat and a mostly-black desktop with a bright taskbar is dark but
 structured.
 
-This is the one place ``desktop`` imports Pillow; screenshots cross every other
-boundary as raw ``bytes``.
+Readiness uses Pillow; screenshots cross every other boundary as raw ``bytes``.
 
 The sampler must AVERAGE, not point-sample: ``thumbnail`` averages over a
 resampling filter, and the two ratio/stddev thresholds below are calibrated
@@ -27,8 +26,9 @@ import asyncio
 import io
 import logging
 import time
+from collections.abc import Callable
 from enum import Enum
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from PIL import Image
 
@@ -72,7 +72,7 @@ class ScreenshotStatus(Enum):
 DEFAULT_THUMBNAIL_SIZE = (160, 90)
 
 
-def png_luma_samples(
+def screenshot_luma_samples(
     data: bytes, *, thumbnail_size: tuple[int, int] = DEFAULT_THUMBNAIL_SIZE
 ) -> list[int]:
     """Decode a screenshot and return downsampled luma values in 0..255.
@@ -82,8 +82,7 @@ def png_luma_samples(
     ``desktop_screenshot_ready`` turns that into ``INVALID``, which is a
     *structural* status that stops the wait rather than retrying forever.
 
-    Not restricted to PNG despite the name, which is kept for call-site
-    compatibility: whatever Pillow opens, this measures.
+    Whatever Pillow opens, this measures.
     """
     image = Image.open(io.BytesIO(data)).convert("L")
     image.thumbnail(thumbnail_size)
@@ -96,7 +95,7 @@ LumaSampler = Callable[[bytes], list[int]]
 def desktop_screenshot_ready(
     screenshot: bytes | None,
     *,
-    luma_sampler: LumaSampler = png_luma_samples,
+    luma_sampler: LumaSampler = screenshot_luma_samples,
 ) -> tuple[ScreenshotStatus, str]:
     """Classify one screenshot as ready / not-ready / structurally broken.
 
@@ -141,7 +140,7 @@ def wait_for_screenshot_ready(
     initial_delay_s: float = DESKTOP_READY_INITIAL_DELAY_S,
     timeout_s: float = DESKTOP_READY_TIMEOUT_S,
     poll_s: float = DESKTOP_READY_POLL_S,
-    luma_sampler: LumaSampler = png_luma_samples,
+    luma_sampler: LumaSampler = screenshot_luma_samples,
 ) -> bytes:
     """Synchronous readiness wait over any screenshot-returning callable.
 
@@ -192,7 +191,7 @@ async def wait_for_desktop_ready(
     env: DesktopObserver,
     *,
     initial_obs: dict[str, Any] | None = None,
-    luma_sampler: LumaSampler = png_luma_samples,
+    luma_sampler: LumaSampler = screenshot_luma_samples,
 ) -> dict[str, Any]:
     """Async readiness wait over an observation-returning environment."""
     started_at = time.monotonic()

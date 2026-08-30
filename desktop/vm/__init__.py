@@ -34,7 +34,7 @@ from .qemu import QemuError, QemuRuntime, QmpClient, kvm_available
 from .readiness import (
     ScreenshotStatus,
     desktop_screenshot_ready,
-    png_luma_samples,
+    screenshot_luma_samples,
     wait_for_desktop_ready,
     wait_for_screenshot_ready,
 )
@@ -120,7 +120,7 @@ __all__ = [
     "build_qemu_runtime",
     "desktop_screenshot_ready",
     "kvm_available",
-    "png_luma_samples",
+    "screenshot_luma_samples",
     "qemu_session_factory",
     "wait_for_desktop_ready",
     "wait_for_screenshot_ready",
