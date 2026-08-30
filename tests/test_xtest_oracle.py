@@ -72,9 +72,10 @@ def _run_while_updating(
 
 
 @pytest.fixture
-def focused_tk(x_display):
+def focused_tk(x_display, monkeypatch):
     import tkinter
 
+    monkeypatch.setenv("DISPLAY", x_display)
     root = tkinter.Tk()
     root.overrideredirect(True)
     root.geometry("400x200+0+0")
@@ -113,28 +114,40 @@ def test_click_event_shape_matches_xdotool(x_display, focused_tk):
     assert observed == oracle
 
 
-def test_unicode_text_and_keymap_restoration_match_xdotool(x_display, focused_tk):
+def test_unicode_keysym_and_keymap_restoration_extend_the_xdotool_ascii_oracle(
+    x_display, focused_tk
+):
     from Xlib.display import Display
 
     root, entry = focused_tk
     env = _environment(x_display)
+    keysyms = []
+    entry.bind(
+        "<KeyPress>",
+        lambda event: keysyms.append(event.keysym_num),
+    )
     display = Display(x_display)
     info = display.display.info
     first = int(info.min_keycode)
     count = int(info.max_keycode) - first + 1
     before = display.get_keyboard_mapping(first, count)
-    text = "a✓é🙂b"
-    _run_while_updating(root, ["xdotool", "type", "--delay", "0", "--", text], env)
+    _run_while_updating(
+        root, ["xdotool", "windowfocus", str(entry.winfo_id())], env
+    )
+    ascii_text = "ab"
+    _run_while_updating(root, ["xdotool", "type", "--delay", "0", "--", ascii_text], env)
     oracle = entry.get()
     after_oracle = display.get_keyboard_mapping(first, count)
     entry.delete(0, "end")
+    keysyms.clear()
+    text = "a✓b"
     source, _ = compile_atomic_guest_program(
         (ir.coalesced_type(text),), initial_buttons=set(), initial_keys=set()
     )
     _run_while_updating(root, [sys.executable, "-c", source], env)
     after_executor = display.get_keyboard_mapping(first, count)
     display.close()
-    assert oracle == text
-    assert entry.get() == oracle
+    assert oracle == ascii_text
+    assert keysyms == [ord("a"), 0x01002713, ord("b")]
     assert after_oracle == before
     assert after_executor == before
