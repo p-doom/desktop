@@ -44,6 +44,8 @@ _LOG = logging.getLogger("desktop.vm.osworld_client")
 #: policy: a larger file is refused rather than being cut short by E2BIG.
 GUEST_PROGRAM_MAX_BYTES = 131072
 
+SECRET_STDIN_EXECUTE_CONTRACT = "desktop_execute_secret_stdin_v1"
+
 #: How long one control call of a detached command may take.  It has to exceed
 #: ``_DETACHED_POLL_WINDOW_S``, because a collect call deliberately blocks in the
 #: guest for that long rather than returning immediately and being re-issued.
@@ -249,6 +251,59 @@ class OSWorldClient:
                 f"rc={result.get('returncode')!r} stderr={result.get('error')!r}"
             )
         return result
+
+    def execute_with_secret_stdin(
+        self,
+        argv: Sequence[str],
+        *,
+        secret: bytes,
+        timeout_s: float | None = None,
+    ) -> None:
+        """Run one guest argv with secret bytes on stdin and no output channel."""
+        command = list(argv)
+        if not command or not all(
+            isinstance(value, str) and value for value in command
+        ):
+            raise ValueError("argv must contain at least one non-empty string")
+        if type(secret) is not bytes or not secret:
+            raise ValueError("secret must be non-empty bytes")
+
+        capability = self._request_json("GET", "/execute")
+        expected_capability = {"contract": SECRET_STDIN_EXECUTE_CONTRACT}
+        if capability != expected_capability:
+            raise GuestAgentError(
+                "guest does not attest the secret-stdin execute contract: "
+                f"{capability!r}"
+            )
+
+        result = self._request_json(
+            "POST",
+            "/execute",
+            payload={
+                "command": command,
+                "shell": False,
+                "contract": SECRET_STDIN_EXECUTE_CONTRACT,
+                "secret_stdin_base64": base64.b64encode(secret).decode("ascii"),
+            },
+            timeout_s=timeout_s,
+        )
+        if not isinstance(result, dict) or set(result) != {
+            "contract",
+            "status",
+            "returncode",
+        }:
+            raise GuestAgentError("guest secret-stdin execute returned an invalid result")
+        if (
+            result["contract"] != SECRET_STDIN_EXECUTE_CONTRACT
+            or result["status"] != "success"
+            or type(result["returncode"]) is not int
+            or result["returncode"] != 0
+        ):
+            raise GuestAgentError(
+                "guest secret-stdin command failed: "
+                f"contract={result['contract']!r} status={result['status']!r} "
+                f"rc={result['returncode']!r}"
+            )
 
     def write_file(self, path: str, content: bytes) -> None:
         """Push bytes to an absolute guest path.

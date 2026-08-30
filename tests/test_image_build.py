@@ -19,6 +19,7 @@ own error handling are in the loop rather than mocked away.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import importlib.util
@@ -56,6 +57,7 @@ from desktop.vm.image_build import (
     render_verification_script,
 )
 from desktop.vm.observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
+from desktop.vm.osworld_client import SECRET_STDIN_EXECUTE_CONTRACT
 
 
 @pytest.fixture
@@ -279,6 +281,13 @@ def test_the_guest_patch_applies_to_its_exact_expected_source_shape(tmp_path):
     assert "screenshot.size != (1920, 1080)" in source
     assert "screenshot.png" not in source
     assert "image/png" not in source
+    assert f'SECRET_STDIN_EXECUTE_CONTRACT = "{SECRET_STDIN_EXECUTE_CONTRACT}"' in source
+    assert "input=secret_stdin" in source
+    assert "stdout=subprocess.DEVNULL" in source
+    assert "stderr=subprocess.DEVNULL" in source
+    assert "'contract': SECRET_STDIN_EXECUTE_CONTRACT" in source
+    assert "'output': result.stdout" in source
+    assert "'error': result.stderr" in source
 
 
 def test_the_guest_patch_refuses_a_changed_source_shape(tmp_path):
@@ -424,10 +433,52 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == "/execute":
+            body = json.dumps(
+                {"contract": SECRET_STDIN_EXECUTE_CONTRACT}
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._respond()
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = json.loads(
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        )
+        if "secret_stdin_base64" in body:
+            assert set(body) == {
+                "command",
+                "shell",
+                "contract",
+                "secret_stdin_base64",
+            }
+            assert body["shell"] is False
+            assert body["contract"] == SECRET_STDIN_EXECUTE_CONTRACT
+            secret = base64.b64decode(body["secret_stdin_base64"], validate=True)
+            done = subprocess.run(
+                body["command"],
+                input=secret,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            response = json.dumps(
+                {
+                    "contract": SECRET_STDIN_EXECUTE_CONTRACT,
+                    "status": "success",
+                    "returncode": done.returncode,
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+            return
         self._respond()
 
 
@@ -501,7 +552,11 @@ RELOADER_OUTPUT = {
     "pids_stable": True,
 }
 
-VERIFIED_CHECKS = {**VERIFICATION_OUTPUT, "reloader_disabled": RELOADER_OUTPUT}
+VERIFIED_CHECKS = {
+    **VERIFICATION_OUTPUT,
+    "secret_stdin_execute_contract": SECRET_STDIN_EXECUTE_CONTRACT,
+    "reloader_disabled": RELOADER_OUTPUT,
+}
 
 
 def test_verify_reads_the_last_stdout_line_of_the_probe_as_json(guest, monkeypatch):
@@ -515,6 +570,7 @@ def test_verify_reads_the_last_stdout_line_of_the_probe_as_json(guest, monkeypat
     checks = guest._verify()
     assert checks["server_pids"] == ["1234"]
     assert checks["production_server_call"] is True
+    assert checks["secret_stdin_execute_contract"] == SECRET_STDIN_EXECUTE_CONTRACT
     assert checks["tools"]["xcf2png"] == "/usr/bin/xcf2png"
     assert guest.report.steps["verify"] >= 0
 
@@ -778,6 +834,10 @@ def test_the_manifest_records_every_declared_package_and_artifact(config):
     ]
     assert manifest["deliberately_absent"] == list(AGENT_INSTALLED_MODULES)
     assert manifest["guest_server_call"] == PRODUCTION_SERVER_CALL
+    assert (
+        manifest["secret_stdin_execute_contract"]
+        == SECRET_STDIN_EXECUTE_CONTRACT
+    )
     assert manifest["image_domain"] == OBSERVATION_CONTRACT
     assert manifest["guest_server_patch_sha256"] == hashlib.sha256(
         GUEST_SCREENSHOT_PATCH.read_bytes()
@@ -897,6 +957,7 @@ def test_verify_only_fails_on_an_invalid_published_image(config, monkeypatch):
         ({"agent_installed_modules": ["pytest"]}, "pytest"),
         ({"tools": {**VERIFICATION_OUTPUT["tools"], "xcf2png": None}}, "xcf2png"),
         ({"production_server_call": False}, "debug call"),
+        ({"secret_stdin_execute_contract": "old"}, "secret-stdin"),
         ({"reloader_disabled": {**RELOADER_OUTPUT, "pids_stable": False}}, "restarted"),
         (
             {"reloader_disabled": {**RELOADER_OUTPUT, "concurrent": False}},

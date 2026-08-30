@@ -27,7 +27,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
-from .osworld_client import GuestAgentError, OSWorldClient
+from .osworld_client import (
+    SECRET_STDIN_EXECUTE_CONTRACT,
+    GuestAgentError,
+    OSWorldClient,
+)
 from .pool import allocate_worker_ports, node_port_lock_dir
 from .qemu import QemuError, QmpClient
 from .readiness import ScreenshotStatus, desktop_screenshot_ready
@@ -81,6 +85,7 @@ _PROVISION_LOG = "/tmp/desktop_image_provision.log"
 _PROVISION_MARKER = "/tmp/desktop_image_provision.rc"
 _GUEST_BOOT_ID = "/proc/sys/kernel/random/boot_id"
 _RELOADER_HOLD_S = 20
+_SECRET_STDIN_PROBE = b"desktop-image-secret-stdin-probe-v1"
 _RETRY_FUNCTION = (
     'retry() { for _ in $(seq 1 40); do "$@" && return 0; sleep 10; done; return 1; }'
 )
@@ -243,6 +248,10 @@ def _verification_failures(checks: dict[str, object]) -> list[str]:
         failures.append(f"tools absent from the guest PATH: {absent}")
     if checks.get("production_server_call") is not True:
         failures.append("the guest server source still carries the debug call")
+    if checks.get("secret_stdin_execute_contract") != SECRET_STDIN_EXECUTE_CONTRACT:
+        failures.append(
+            "the guest did not functionally attest the secret-stdin execute contract"
+        )
     reloader = checks.get("reloader_disabled")
     if not isinstance(reloader, dict):
         failures.append(f"the reloader probe did not run: {reloader!r}")
@@ -352,6 +361,7 @@ def build_manifest(
             GUEST_SCREENSHOT_PATCH.read_bytes()
         ).hexdigest(),
         "guest_server_call": PRODUCTION_SERVER_CALL,
+        "secret_stdin_execute_contract": SECRET_STDIN_EXECUTE_CONTRACT,
         "apt_packages": list(config.apt_packages),
         "pip_packages": list(config.pip_packages),
         "deb_artifacts": [
@@ -664,8 +674,20 @@ class DesktopImageBuilder:
 
     def _verify(self) -> dict[str, object]:
         started = time.monotonic()
+        digest = hashlib.sha256(_SECRET_STDIN_PROBE).hexdigest()
+        self._require_client().execute_with_secret_stdin(
+            [
+                "python3",
+                "-c",
+                "import hashlib,sys;raise SystemExit("
+                f"hashlib.sha256(sys.stdin.buffer.read()).hexdigest()!={digest!r})",
+            ],
+            secret=_SECRET_STDIN_PROBE,
+            timeout_s=120.0,
+        )
         output = self.guest_bash(render_verification_script(), timeout_s=120.0)
         checks: dict[str, object] = json.loads(output.strip().splitlines()[-1])
+        checks["secret_stdin_execute_contract"] = SECRET_STDIN_EXECUTE_CONTRACT
         checks["reloader_disabled"] = self._probe_reloader()
         self.report.record("verify", time.monotonic() - started)
         self.log(f"verification: {json.dumps(checks)}")

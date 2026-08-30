@@ -1,11 +1,127 @@
 --- a/main.py
 +++ b/main.py
-@@ -1,3 +1,4 @@
-+import io
+@@ -1,3 +1,6 @@
++import base64
++import binascii
  import ctypes
++import io
  import os
  import platform
-@@ -258,81 +259,29 @@
+@@ -72,14 +75,50 @@
+ recording_process = None  # fixme: this is a temporary solution for recording, need to be changed to support multiple-process
+ recording_path = "/tmp/recording.mp4"
+ 
++SECRET_STDIN_EXECUTE_CONTRACT = "desktop_execute_secret_stdin_v1"
++
+ 
+-@app.route('/setup/execute', methods=['POST'])
+-@app.route('/execute', methods=['POST'])
++@app.route('/setup/execute', methods=['GET', 'POST'])
++@app.route('/execute', methods=['GET', 'POST'])
+ def execute_command():
++    if request.method == 'GET':
++        return jsonify({'contract': SECRET_STDIN_EXECUTE_CONTRACT})
++
+     data = request.json
+     # The 'command' key in the JSON request should contain the command to be executed.
+     shell = data.get('shell', False)
+     command = data.get('command', "" if shell else [])
++    secret_stdin = None
++    if 'secret_stdin_base64' in data:
++        if (
++            set(data) != {
++                'command', 'shell', 'contract', 'secret_stdin_base64'
++            }
++            or data['contract'] != SECRET_STDIN_EXECUTE_CONTRACT
++            or shell is not False
++            or not isinstance(command, list)
++            or not command
++            or any(not isinstance(arg, str) or not arg for arg in command)
++            or not isinstance(data['secret_stdin_base64'], str)
++        ):
++            return jsonify({
++                'contract': SECRET_STDIN_EXECUTE_CONTRACT,
++                'status': 'error',
++            }), 400
++        try:
++            secret_stdin = base64.b64decode(
++                data['secret_stdin_base64'], validate=True
++            )
++        except (binascii.Error, ValueError):
++            return jsonify({
++                'contract': SECRET_STDIN_EXECUTE_CONTRACT,
++                'status': 'error',
++            }), 400
++        if not secret_stdin:
++            return jsonify({
++                'contract': SECRET_STDIN_EXECUTE_CONTRACT,
++                'status': 'error',
++            }), 400
+ 
+     if isinstance(command, str) and not shell:
+         command = shlex.split(command)
+@@ -96,25 +135,45 @@
+         else:
+             flags = 0
+-        result = subprocess.run(
+-            command,
+-            stdout=subprocess.PIPE,
+-            stderr=subprocess.PIPE,
+-            shell=shell,
+-            text=True,
+-            timeout=120,
+-            creationflags=flags,
+-        )
+-        return jsonify({
+-            'status': 'success',
+-            'output': result.stdout,
+-            'error': result.stderr,
+-            'returncode': result.returncode
+-        })
++        if secret_stdin is None:
++            result = subprocess.run(
++                command,
++                stdout=subprocess.PIPE,
++                stderr=subprocess.PIPE,
++                shell=shell,
++                text=True,
++                timeout=120,
++                creationflags=flags,
++            )
++            return jsonify({
++                'status': 'success',
++                'output': result.stdout,
++                'error': result.stderr,
++                'returncode': result.returncode
++            })
++        result = subprocess.run(
++            command,
++            input=secret_stdin,
++            stdout=subprocess.DEVNULL,
++            stderr=subprocess.DEVNULL,
++            shell=False,
++            timeout=120,
++            creationflags=flags,
++        )
++        return jsonify({
++            'contract': SECRET_STDIN_EXECUTE_CONTRACT,
++            'status': 'success',
++            'returncode': result.returncode,
++        })
+     except Exception as e:
++        if secret_stdin is not None:
++            return jsonify({
++                'contract': SECRET_STDIN_EXECUTE_CONTRACT,
++                'status': 'error',
++            }), 500
+         return jsonify({
+             'status': 'error',
+             'message': str(e)
+         }), 500
+ 
+ 
+ @app.route('/setup/execute_with_verification', methods=['POST'])
+@@ -258,81 +317,29 @@
          return "{:} launched successfully".format(command if shell else " ".join(command))
      except Exception as e:
          return jsonify({"status": "error", "message": str(e)}), 500

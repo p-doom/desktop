@@ -12,6 +12,7 @@ method's error handling is hand-written and therefore worth checking.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import subprocess
@@ -25,6 +26,7 @@ from PIL import Image, ImageDraw
 
 from desktop.vm.observation import OBSERVATION_SIZE
 from desktop.vm.osworld_client import (
+    SECRET_STDIN_EXECUTE_CONTRACT,
     GuestAgentError,
     OSWorldClient,
     _decode_detached_result,
@@ -431,6 +433,10 @@ def test_settled_honours_the_minimum_delay(agent):
 AGENT_FAULTS: dict = {"reject_next": 0}
 #: Every request body the executing agent accepted, in order.
 AGENT_CALLS: list = []
+AGENT_CAPABILITY: dict = {"contract": SECRET_STDIN_EXECUTE_CONTRACT}
+AGENT_PROCESS: dict = {"pid": None}
+AGENT_PROCESS_STARTED = threading.Event()
+AGENT_RESPONSES: list = []
 
 
 class _ExecutingHandler(BaseHTTPRequestHandler):
@@ -438,6 +444,19 @@ class _ExecutingHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *args):
         pass
+
+    def do_GET(self):
+        if AGENT_CAPABILITY["contract"] is None:
+            self.send_response(405)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        payload = json.dumps(AGENT_CAPABILITY).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
@@ -449,15 +468,32 @@ class _ExecutingHandler(BaseHTTPRequestHandler):
             return
         AGENT_CALLS.append(body)
         assert body["shell"] is False, "the agent is never asked for a shell"
-        done = subprocess.run(body["command"], capture_output=True, text=True)
-        payload = json.dumps(
-            {
+        if "secret_stdin_base64" in body:
+            secret = base64.b64decode(body["secret_stdin_base64"], validate=True)
+            process = subprocess.Popen(
+                body["command"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            AGENT_PROCESS["pid"] = process.pid
+            AGENT_PROCESS_STARTED.set()
+            process.communicate(input=secret)
+            response = {
+                "contract": SECRET_STDIN_EXECUTE_CONTRACT,
+                "status": "success",
+                "returncode": process.returncode,
+            }
+        else:
+            done = subprocess.run(body["command"], capture_output=True, text=True)
+            response = {
                 "status": "success" if done.returncode == 0 else "error",
                 "returncode": done.returncode,
                 "output": done.stdout,
                 "error": done.stderr,
             }
-        ).encode("utf-8")
+        AGENT_RESPONSES.append(response)
+        payload = json.dumps(response).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -484,6 +520,10 @@ def executing_agent_server():
 def executing_agent(executing_agent_server):
     AGENT_FAULTS["reject_next"] = 0
     AGENT_CALLS.clear()
+    AGENT_CAPABILITY["contract"] = SECRET_STDIN_EXECUTE_CONTRACT
+    AGENT_PROCESS["pid"] = None
+    AGENT_PROCESS_STARTED.clear()
+    AGENT_RESPONSES.clear()
     return OSWorldClient(
         f"http://127.0.0.1:{executing_agent_server.server_port}", timeout_s=30.0
     )
@@ -542,6 +582,76 @@ def test_a_missing_parent_directory_is_reported_rather_than_created(
     with pytest.raises(GuestAgentError, match="guest command failed"):
         executing_agent.write_file(str(tmp_path / "absent" / "f.txt"), b"x")
     assert not (tmp_path / "absent").exists()
+
+
+def test_secret_stdin_is_a_pipe_and_never_enters_cmdline_logs_or_result(
+    executing_agent, caplog
+):
+    secret = b"guest-password-falsification-93f5\n"
+    program = (
+        "import os,sys,time;"
+        "data=sys.stdin.buffer.read();"
+        "os.write(1,data);os.write(2,data);time.sleep(1)"
+    )
+    outcome: list[BaseException] = []
+
+    def invoke() -> None:
+        try:
+            executing_agent.execute_with_secret_stdin(
+                ["python3", "-c", program], secret=secret, timeout_s=10.0
+            )
+        except BaseException as error:
+            outcome.append(error)
+
+    thread = threading.Thread(target=invoke)
+    thread.start()
+    assert AGENT_PROCESS_STARTED.wait(timeout=5)
+    pid = AGENT_PROCESS["pid"]
+    assert type(pid) is int
+    cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    assert secret not in cmdline
+    assert base64.b64encode(secret) not in cmdline
+    assert Path(f"/proc/{pid}/fd/0").readlink().as_posix().startswith("pipe:")
+
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert outcome == []
+    assert not Path(f"/proc/{pid}").exists()
+    assert AGENT_RESPONSES[-1] == {
+        "contract": SECRET_STDIN_EXECUTE_CONTRACT,
+        "status": "success",
+        "returncode": 0,
+    }
+    command = AGENT_CALLS[-1]["command"]
+    assert secret not in "\0".join(command).encode("utf-8")
+    assert base64.b64encode(secret) not in "\0".join(command).encode("utf-8")
+    assert secret.decode("utf-8").strip() not in caplog.text
+    assert base64.b64encode(secret).decode("ascii") not in caplog.text
+
+
+def test_an_old_guest_is_refused_before_secret_bytes_are_sent(executing_agent):
+    AGENT_CAPABILITY["contract"] = None
+    with pytest.raises(GuestAgentError, match="GET /execute returned 405"):
+        executing_agent.execute_with_secret_stdin(
+            ["true"], secret=b"must-not-be-sent", timeout_s=5.0
+        )
+    assert AGENT_CALLS == []
+
+
+def test_a_wrong_secret_stdin_contract_is_refused_before_post(executing_agent):
+    AGENT_CAPABILITY["contract"] = "desktop_execute_secret_stdin_v0"
+    with pytest.raises(GuestAgentError, match="does not attest"):
+        executing_agent.execute_with_secret_stdin(
+            ["true"], secret=b"must-not-be-sent", timeout_s=5.0
+        )
+    assert AGENT_CALLS == []
+
+
+@pytest.mark.parametrize("secret", [b"", "password", bytearray(b"password")])
+def test_secret_stdin_accepts_only_non_empty_bytes(executing_agent, secret):
+    with pytest.raises(ValueError, match="secret must be non-empty bytes"):
+        executing_agent.execute_with_secret_stdin(["true"], secret=secret)
+    assert AGENT_CALLS == []
 
 
 def test_a_detached_command_returns_its_code_and_both_streams(executing_agent):
