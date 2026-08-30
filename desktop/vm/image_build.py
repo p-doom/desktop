@@ -7,11 +7,8 @@ and its in-VM agent must be "an artifact a container rebuild cannot change", and
 the qcow2 itself an opaque binary with no producer.  This module is the
 producer: it boots the upstream image, installs what OSWorld task setups and
 graders need, verifies the result from inside the guest, and only then publishes
-the image next to a manifest recording exactly what went in.
-
-Ported from the ``reinforcement-learning`` repo, which ran QEMU inside the
-OSWorld ``.sif``.  Here QEMU runs directly on the host, as it does everywhere
-else in this package, so there is no container argv and no bind list.
+the image next to a manifest recording exactly what went in. QEMU runs directly
+on the host, so there is no container argv or bind list.
 """
 
 from __future__ import annotations
