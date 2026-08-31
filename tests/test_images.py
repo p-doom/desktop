@@ -182,12 +182,9 @@ def test_the_nonkvm_tier_installs_the_input_stack_the_executor_needs(nonkvm_text
 
 
 def test_the_nonkvm_tier_installs_the_xlib_binding_the_typing_path_imports(nonkvm_text):
-    from desktop import ir
-    from desktop.execute.guest_program import compile_atomic_guest_program
+    from desktop.vm.client import ACTION_EXECUTOR_PATH
 
-    program, _ = compile_atomic_guest_program(
-        (ir.coalesced_type("é"),), initial_buttons=set(), initial_keys=set()
-    )
+    program = ACTION_EXECUTOR_PATH.read_text()
     assert "from Xlib import X" in program
     assert "Gtk" not in program and "pyautogui" not in program
     post = _section(nonkvm_text, "post")

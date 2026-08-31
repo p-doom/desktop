@@ -26,8 +26,8 @@ agent, no OSWorld task setup, and different application versions. It is a tier
 plumbing check, not a result.
 
 It is still worth having: it runs on any node, starts in seconds, and has
-`python-xlib`, so a guest program compiled by
-`desktop/execute/guest_program.py` executes there. PyAutoGUI remains installed
+`python-xlib`, so the same `desktop/vm/guest/executor.py` can execute there.
+PyAutoGUI remains installed
 only for OSWorld setup/evaluator code. `xdotool` is a differential test oracle,
 not an executor path.
 

@@ -1,4 +1,4 @@
-"""Compile a guest program, run it in a subprocess, and parse its result marker."""
+"""Run the installed guest executor source against a fake XTEST backend."""
 
 from __future__ import annotations
 
@@ -9,12 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from desktop.execute.guest_program import (
-    ATOMIC_RESULT_PREFIX,
-    compile_atomic_guest_program,
-)
 from desktop.execute.keymap import guest_key
+from desktop.execute.protocol import build_action_request
 from desktop.ir import Operation
+from desktop.vm.client import ACTION_EXECUTOR_PATH
 
 SUPPORT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SUPPORT_DIR.parent.parent
@@ -27,6 +25,8 @@ _backend = fake_guest_backend.install(
     size={size!r}, cursor={cursor!r}, initial_mask={mask!r},
     initial_keys={keys!r}, fail_xtest_at={fail_xtest_at!r}
 )
+import runpy as _runpy
+_runpy.run_path({executor!r}, run_name='__main__')
 """
 
 
@@ -38,14 +38,9 @@ class GuestRun:
     stdout: str
     stderr: str
     payload: dict[str, Any] | None
+    request: dict[str, Any]
     program: str
     expected_mask: int
-
-    @property
-    def marker_count(self) -> int:
-        return sum(
-            1 for line in self.stdout.splitlines() if line.startswith(ATOMIC_RESULT_PREFIX)
-        )
 
     def _tagged(self, tag: str) -> Any:
         for line in self.stderr.splitlines():
@@ -87,47 +82,46 @@ def run_guest_program(
     fail_xtest_at: int | None = None,
     timeout_s: float = 60.0,
 ) -> GuestRun:
-    """Compile ``operations`` and execute the result in a fresh interpreter."""
+    """Serialize ``operations`` and execute the real installed source."""
     held_keys = {guest_key(key) for key in initial_keys or ()}
     backend_keys = (
         held_keys
         if backend_initial_keys is None
         else {guest_key(key) for key in backend_initial_keys}
     )
-    program, expected_mask = compile_atomic_guest_program(
+    request, expected_mask, _ = build_action_request(
         operations,
         initial_buttons=set(initial_buttons or ()),
         initial_keys=held_keys,
     )
-    driver = (
-        _DRIVER_HEADER.format(
-            support=str(SUPPORT_DIR),
-            size=size,
-            cursor=cursor,
-            mask=initial_mask,
-            keys=tuple(sorted(backend_keys)),
-            fail_xtest_at=fail_xtest_at,
-        )
-        + program
+    driver = _DRIVER_HEADER.format(
+        support=str(SUPPORT_DIR),
+        size=size,
+        cursor=cursor,
+        mask=initial_mask,
+        keys=tuple(sorted(backend_keys)),
+        fail_xtest_at=fail_xtest_at,
+        executor=str(ACTION_EXECUTOR_PATH),
     )
     completed = subprocess.run(
         [sys.executable, "-c", driver],
+        input=json.dumps(request),
         capture_output=True,
         text=True,
         timeout=timeout_s,
         cwd=str(REPO_ROOT),
     )
-    markers = [
-        line for line in completed.stdout.splitlines() if line.startswith(ATOMIC_RESULT_PREFIX)
-    ]
     payload = None
-    if len(markers) == 1:
-        payload = json.loads(markers[0][len(ATOMIC_RESULT_PREFIX) :])
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        pass
     return GuestRun(
         returncode=completed.returncode,
         stdout=completed.stdout,
         stderr=completed.stderr,
         payload=payload,
-        program=program,
+        request=request,
+        program=ACTION_EXECUTOR_PATH.read_text(),
         expected_mask=expected_mask,
     )

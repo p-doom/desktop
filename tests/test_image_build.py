@@ -13,7 +13,7 @@ guest's ``main.py``.  That is the only way to know the generated program parses,
 runs, and really does put one JSON object on its last stdout line.
 
 The guest-facing paths run against a real ``http.server`` speaking the in-VM
-agent's ``/execute`` and ``/screenshot``, so ``OSWorldClient`` and the module's
+agent's ``/execute`` and ``/screenshot``, so ``DesktopClient`` and the module's
 own error handling are in the loop rather than mocked away.
 """
 
@@ -35,9 +35,14 @@ import pytest
 from PIL import Image, ImageDraw
 
 import desktop.vm.image_build as image_build
+from desktop.execute.protocol import ACTION_CONTRACT
+from desktop.vm.client import SECRET_STDIN_EXECUTE_CONTRACT
 from desktop.vm.image_build import (
+    ACTION_EXECUTOR_SHA256,
     AGENT_INSTALLED_MODULES,
     DEBUG_SERVER_CALL,
+    GUEST_ACTION_EXECUTOR,
+    GUEST_ACTIONS_PATCH,
     GUEST_MODULE_PROBE,
     GUEST_SCREENSHOT_PATCH,
     GUEST_SERVER_SOURCE,
@@ -57,7 +62,6 @@ from desktop.vm.image_build import (
     render_verification_script,
 )
 from desktop.vm.observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
-from desktop.vm.osworld_client import SECRET_STDIN_EXECUTE_CONTRACT
 
 
 @pytest.fixture
@@ -142,9 +146,7 @@ def test_the_image_under_build_is_not_opened_with_snapshot_on(config):
 
 def test_the_guest_agent_port_is_forwarded_from_the_leased_port(config):
     argv = qemu_argv(config, Path("/img.qcow2"), 20450, Path("/tmp/qmp.sock"))
-    assert _flag(argv, "-netdev") == (
-        "user,id=net0,hostfwd=tcp:127.0.0.1:20450-:5000"
-    )
+    assert _flag(argv, "-netdev") == ("user,id=net0,hostfwd=tcp:127.0.0.1:20450-:5000")
 
 
 def test_a_qmp_monitor_is_requested_so_the_guest_can_be_powered_down(config):
@@ -189,9 +191,7 @@ def test_the_overlay_command_names_the_backing_format_explicitly():
 
 
 def test_the_published_image_command_flattens_its_source():
-    argv = image_convert_argv(
-        "qemu-img", Path("/base.qcow2"), Path("/published.qcow2")
-    )
+    argv = image_convert_argv("qemu-img", Path("/base.qcow2"), Path("/published.qcow2"))
     assert argv == [
         "qemu-img",
         "convert",
@@ -240,10 +240,10 @@ def test_the_provision_script_rewrites_the_debug_server_call_and_proves_it(confi
     assert script.splitlines()[0] == "set -eux"
 
 
-def _patch_preimage() -> str:
+def _patch_preimage(patch: Path) -> str:
     lines: list[str] = []
     in_hunk = False
-    for line in GUEST_SCREENSHOT_PATCH.read_text().splitlines(keepends=True):
+    for line in patch.read_text().splitlines(keepends=True):
         if line.startswith("@@ "):
             in_hunk = True
             continue
@@ -252,11 +252,13 @@ def _patch_preimage() -> str:
     return "".join(lines)
 
 
-def _patch_check(tmp_path, source: str) -> subprocess.CompletedProcess[str]:
+def _patch_check(
+    tmp_path, source: str, patch: Path = GUEST_SCREENSHOT_PATCH
+) -> subprocess.CompletedProcess[str]:
     (tmp_path / "main.py").write_text(source)
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     return subprocess.run(
-        ["git", "-C", str(tmp_path), "apply", "--check", str(GUEST_SCREENSHOT_PATCH)],
+        ["git", "-C", str(tmp_path), "apply", "--check", str(patch)],
         capture_output=True,
         text=True,
         check=False,
@@ -264,7 +266,7 @@ def _patch_check(tmp_path, source: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_the_guest_patch_applies_to_its_exact_expected_source_shape(tmp_path):
-    checked = _patch_check(tmp_path, _patch_preimage())
+    checked = _patch_check(tmp_path, _patch_preimage(GUEST_SCREENSHOT_PATCH))
     assert checked.returncode == 0, checked.stderr
     applied = subprocess.run(
         ["git", "-C", str(tmp_path), "apply", str(GUEST_SCREENSHOT_PATCH)],
@@ -292,17 +294,37 @@ def test_the_guest_patch_applies_to_its_exact_expected_source_shape(tmp_path):
 
 
 def test_the_guest_patch_refuses_a_changed_source_shape(tmp_path):
-    source = _patch_preimage().replace(
+    source = _patch_preimage(GUEST_SCREENSHOT_PATCH).replace(
         "screenshot.save(file_path)", "screenshot.save(file_path, format='PNG')"
     )
     checked = _patch_check(tmp_path, source)
     assert checked.returncode != 0
 
 
+def test_the_action_patch_applies_to_its_exact_expected_source_shape(tmp_path):
+    source = _patch_preimage(GUEST_ACTIONS_PATCH)
+    checked = _patch_check(tmp_path, source, GUEST_ACTIONS_PATCH)
+    assert checked.returncode == 0, checked.stderr
+    applied = subprocess.run(
+        ["git", "-C", str(tmp_path), "apply", str(GUEST_ACTIONS_PATCH)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert applied.returncode == 0, applied.stderr
+    patched = (tmp_path / "main.py").read_text()
+    assert "@app.route('/v1/actions', methods=['GET', 'POST'])" in patched
+    assert f'ACTION_EXECUTOR_CONTRACT = "{ACTION_CONTRACT}"' in patched
+    assert "['/usr/bin/python3', ACTION_EXECUTOR_PATH]" in patched
+
+
 def test_the_provision_script_applies_and_checks_the_canonical_guest_patch(config):
     script = render_provision_script(config)
     assert "patch --batch --forward --fuzz=0 -p1 -d /home/user/server" in script
     assert GUEST_SCREENSHOT_PATCH.read_text() in script
+    assert GUEST_ACTIONS_PATCH.read_text() in script
+    assert GUEST_ACTION_EXECUTOR in script
+    assert ACTION_EXECUTOR_SHA256 in script
     assert f"grep -qF '{OBSERVATION_CONTRACT}' {GUEST_SERVER_SOURCE}" in script
     assert "quality=92, subsampling=2, optimize=False" in script
     assert 'mimetype="image/jpeg"' in script
@@ -355,9 +377,19 @@ def _run_probe(guest_source: str) -> dict:
     else -- the imports, ``pgrep``, ``shutil.which`` -- runs for real.
     """
     program = compile(_probe_body(render_verification_script()), "<probe>", "exec")
+    real_run = subprocess.run
+
+    def run(argv, *args, **kwargs):
+        if argv[0] == "sha256sum":
+            return subprocess.CompletedProcess(
+                argv, 0, f"{ACTION_EXECUTOR_SHA256}  {GUEST_ACTION_EXECUTOR}\n", ""
+            )
+        return real_run(argv, *args, **kwargs)
+
     namespace: dict = {"open": lambda *a, **k: io.StringIO(guest_source)}
     captured = io.StringIO()
-    with contextlib.redirect_stdout(captured):
+    with contextlib.redirect_stdout(captured), pytest.MonkeyPatch.context() as patch:
+        patch.setattr(subprocess, "run", run)
         exec(program, namespace)
     return json.loads(captured.getvalue().strip().splitlines()[-1])
 
@@ -370,16 +402,13 @@ def test_the_probe_runs_and_puts_one_json_object_on_its_last_stdout_line():
         "server_pids",
         "agent_installed_modules",
         "production_server_call",
+        "action_executor_sha256",
     }
     assert set(payload["tools"]) == set(GUEST_TOOL_PROBE)
 
 
 def test_the_probe_reports_exactly_the_modules_it_could_not_import():
-    expected = [
-        name
-        for name in GUEST_MODULE_PROBE
-        if importlib.util.find_spec(name) is None
-    ]
+    expected = [name for name in GUEST_MODULE_PROBE if importlib.util.find_spec(name) is None]
     assert _run_probe("")["missing_modules"] == expected
 
 
@@ -395,12 +424,11 @@ def test_the_probe_detects_an_agent_installed_module_that_leaked_in():
     ("source", "expected"),
     [(PRODUCTION_SERVER_CALL, True), (DEBUG_SERVER_CALL, False)],
 )
-def test_the_probe_reads_the_server_call_out_of_the_guests_own_source(
-    source, expected
-):
-    assert _run_probe(f"if __name__ == '__main__':\n    {source}\n")[
-        "production_server_call"
-    ] is expected
+def test_the_probe_reads_the_server_call_out_of_the_guests_own_source(source, expected):
+    assert (
+        _run_probe(f"if __name__ == '__main__':\n    {source}\n")["production_server_call"]
+        is expected
+    )
 
 
 # --------------------------------------------------------------------------
@@ -434,10 +462,21 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/execute":
+        if self.path == "/v1/actions":
             body = json.dumps(
-                {"contract": SECRET_STDIN_EXECUTE_CONTRACT}
+                {
+                    "contract": ACTION_CONTRACT,
+                    "executor_sha256": ACTION_EXECUTOR_SHA256,
+                }
             ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/execute":
+            body = json.dumps({"contract": SECRET_STDIN_EXECUTE_CONTRACT}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -447,9 +486,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._respond()
 
     def do_POST(self):
-        body = json.loads(
-            self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        )
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
         if "secret_stdin_base64" in body:
             assert set(body) == {
                 "command",
@@ -502,7 +539,7 @@ def guest(config, agent_server):
     """A builder wired to the fake in-VM agent, with no QEMU behind it."""
     ROUTES.clear()
     builder = DesktopImageBuilder(config, log=lambda _: None)
-    builder._client = image_build.OSWorldClient(agent_server)
+    builder._client = image_build.DesktopClient(agent_server)
     return builder
 
 
@@ -540,6 +577,7 @@ VERIFICATION_OUTPUT = {
     "server_pids": ["1234"],
     "agent_installed_modules": [],
     "production_server_call": True,
+    "action_executor_sha256": ACTION_EXECUTOR_SHA256,
 }
 
 RELOADER_OUTPUT = {
@@ -564,9 +602,7 @@ def test_verify_reads_the_last_stdout_line_of_the_probe_as_json(guest, monkeypat
     """The guest prints apt/pip noise before the object; only the last line is it."""
     monkeypatch.setattr(DesktopImageBuilder, "_probe_reloader", lambda self: {})
     ROUTES["/execute"] = _execute(
-        "Reading package lists...\nWARNING: noise\n"
-        + json.dumps(VERIFICATION_OUTPUT)
-        + "\n"
+        "Reading package lists...\nWARNING: noise\n" + json.dumps(VERIFICATION_OUTPUT) + "\n"
     )
     checks = guest._verify()
     assert checks["server_pids"] == ["1234"]
@@ -576,9 +612,7 @@ def test_verify_reads_the_last_stdout_line_of_the_probe_as_json(guest, monkeypat
     assert guest.report.steps["verify"] >= 0
 
 
-def test_verify_surfaces_a_grader_package_the_guest_could_not_import(
-    guest, monkeypatch
-):
+def test_verify_surfaces_a_grader_package_the_guest_could_not_import(guest, monkeypatch):
     monkeypatch.setattr(DesktopImageBuilder, "_probe_reloader", lambda self: {})
     ROUTES["/execute"] = _execute(
         json.dumps({**VERIFICATION_OUTPUT, "missing_modules": ["pandas", "pikepdf"]})
@@ -586,9 +620,7 @@ def test_verify_surfaces_a_grader_package_the_guest_could_not_import(
     assert guest._verify()["missing_modules"] == ["pandas", "pikepdf"]
 
 
-def test_a_probe_that_returns_nothing_parseable_fails_the_verification(
-    guest, monkeypatch
-):
+def test_a_probe_that_returns_nothing_parseable_fails_the_verification(guest, monkeypatch):
     monkeypatch.setattr(DesktopImageBuilder, "_probe_reloader", lambda self: {})
     ROUTES["/execute"] = _execute("Traceback (most recent call last):\n")
     with pytest.raises(json.JSONDecodeError):
@@ -662,7 +694,7 @@ def test_a_provision_that_never_finishes_times_out_carrying_the_log(
         ),
         log=lambda _: None,
     )
-    builder._client = image_build.OSWorldClient(agent_server)
+    builder._client = image_build.DesktopClient(agent_server)
     with pytest.raises(GuestCommandError, match="did not finish within 0.0s") as raised:
         builder._provision()
     assert "still installing pandas" in str(raised.value)
@@ -732,9 +764,7 @@ def test_a_painted_desktop_ends_the_boot_wait(guest, monkeypatch):
     guest._wait_for_guest(1.0)
 
 
-def test_an_agent_that_never_answers_times_out_naming_what_it_last_saw(
-    guest, monkeypatch
-):
+def test_an_agent_that_never_answers_times_out_naming_what_it_last_saw(guest, monkeypatch):
     monkeypatch.setattr(image_build.time, "sleep", lambda _: None)
     guest._process = _FakeProcess()
     with pytest.raises(GuestCommandError, match="GuestAgentError|not ready"):
@@ -786,7 +816,7 @@ def test_a_guest_that_never_reboots_fails_instead_of_being_verified(config, agen
         ),
         log=lambda _: None,
     )
-    builder._client = image_build.OSWorldClient(agent_server)
+    builder._client = image_build.DesktopClient(agent_server)
     with pytest.raises(GuestCommandError, match="did not reboot before its deadline"):
         builder._reboot()
 
@@ -835,14 +865,17 @@ def test_the_manifest_records_every_declared_package_and_artifact(config):
     ]
     assert manifest["deliberately_absent"] == list(AGENT_INSTALLED_MODULES)
     assert manifest["guest_server_call"] == PRODUCTION_SERVER_CALL
-    assert (
-        manifest["secret_stdin_execute_contract"]
-        == SECRET_STDIN_EXECUTE_CONTRACT
-    )
+    assert manifest["secret_stdin_execute_contract"] == SECRET_STDIN_EXECUTE_CONTRACT
     assert manifest["image_domain"] == OBSERVATION_CONTRACT
-    assert manifest["guest_server_patch_sha256"] == hashlib.sha256(
-        GUEST_SCREENSHOT_PATCH.read_bytes()
-    ).hexdigest()
+    assert (
+        manifest["guest_server_patch_sha256"]
+        == hashlib.sha256(GUEST_SCREENSHOT_PATCH.read_bytes()).hexdigest()
+    )
+    assert (
+        manifest["guest_actions_patch_sha256"]
+        == hashlib.sha256(GUEST_ACTIONS_PATCH.read_bytes()).hexdigest()
+    )
+    assert manifest["guest_action_executor_sha256"] == ACTION_EXECUTOR_SHA256
 
 
 def test_the_manifest_carries_the_guest_checks_and_stays_json_serialisable(config):
@@ -875,9 +908,7 @@ def _stub_build(monkeypatch, checks: dict) -> None:
     monkeypatch.setattr(DesktopImageBuilder, "_verify", lambda self: checks)
 
 
-def test_a_verified_build_publishes_the_image_and_a_manifest_beside_it(
-    config, monkeypatch
-):
+def test_a_verified_build_publishes_the_image_and_a_manifest_beside_it(config, monkeypatch):
     _stub_build(monkeypatch, dict(VERIFIED_CHECKS))
     manifest = DesktopImageBuilder(config, log=lambda _: None).build()
     assert config.output.read_bytes() == b"QFI\xfb provisioned"
@@ -908,9 +939,7 @@ def test_build_flattens_its_source_into_a_self_contained_image(config, monkeypat
     assert config.partial_path.read_bytes() == b"QFI\xfb flattened"
 
 
-def test_a_missing_grader_package_stops_the_image_from_being_published(
-    config, monkeypatch
-):
+def test_a_missing_grader_package_stops_the_image_from_being_published(config, monkeypatch):
     _stub_build(
         monkeypatch,
         {
@@ -959,6 +988,7 @@ def test_verify_only_fails_on_an_invalid_published_image(config, monkeypatch):
         ({"tools": {**VERIFICATION_OUTPUT["tools"], "xcf2png": None}}, "xcf2png"),
         ({"production_server_call": False}, "debug call"),
         ({"secret_stdin_execute_contract": "old"}, "secret-stdin"),
+        ({"action_executor_sha256": "old"}, "action executor"),
         ({"reloader_disabled": {**RELOADER_OUTPUT, "pids_stable": False}}, "restarted"),
         (
             {"reloader_disabled": {**RELOADER_OUTPUT, "concurrent": False}},

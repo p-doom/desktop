@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import pytest
 
-from desktop.execute.guest_program import BUTTON_MASKS
 from desktop.execute.keymap import (
     BUTTON_ALIASES,
     BUTTON_NUMBERS,
@@ -34,6 +33,7 @@ from desktop.execute.keymap import (
     key_press,
     key_transition,
 )
+from desktop.execute.protocol import BUTTON_MASKS
 
 
 @pytest.mark.parametrize(
@@ -288,10 +288,10 @@ def test_every_pressable_key_has_a_fixed_keysym():
 
 def test_an_unsupported_key_fails_before_a_guest_program_is_dispatched():
     from desktop import ir
-    from desktop.execute.guest_program import compile_atomic_guest_program
+    from desktop.execute.protocol import build_action_request
 
     with pytest.raises(KeymapError, match="unsupported X11 key"):
-        compile_atomic_guest_program(
+        build_action_request(
             (ir.key_down("Retrun"),), initial_buttons=set(), initial_keys=set()
         )
 
@@ -354,7 +354,7 @@ def test_a_bool_is_not_silently_an_x11_button_number(bad):
 
 
 def test_the_button_tables_stay_in_lockstep_with_the_pointer_masks():
-    """``BUTTON_MASKS`` in ``guest_program`` must agree with ``POINTER_BUTTONS``."""
+    """The action mask table must agree with the public button vocabulary."""
     assert set(BUTTON_MASKS) == set(POINTER_BUTTONS)
     assert set(BUTTON_NUMBERS.values()) == set(POINTER_BUTTONS)
     assert set(BUTTON_ALIASES.values()) <= set(POINTER_BUTTONS)
@@ -446,7 +446,7 @@ def test_button_transition_maps_and_validates():
 )
 def test_a_press_and_release_spelled_differently_still_balance(down, up):
     from desktop import ir
-    from desktop.execute.guest_program import expected_atomic_input_state
+    from desktop.execute.protocol import expected_atomic_input_state
 
     assert guest_key(down) == guest_key(up), "fixture must be two spellings of one key"
     buttons, keys = expected_atomic_input_state(
@@ -458,7 +458,7 @@ def test_a_press_and_release_spelled_differently_still_balance(down, up):
 
 def test_pressing_one_key_under_two_spellings_is_a_double_press():
     from desktop import ir
-    from desktop.execute.guest_program import ExecutionError, expected_atomic_input_state
+    from desktop.execute.protocol import ExecutionError, expected_atomic_input_state
 
     with pytest.raises(ExecutionError, match="key already held: enter"):
         expected_atomic_input_state(
@@ -471,7 +471,7 @@ def test_pressing_one_key_under_two_spellings_is_a_double_press():
 def test_held_state_is_reported_in_the_mapped_vocabulary():
     """So the host's held set and the guest's ``_de_touched_keys`` are comparable."""
     from desktop import ir
-    from desktop.execute.guest_program import expected_atomic_input_state
+    from desktop.execute.protocol import expected_atomic_input_state
 
     _, keys = expected_atomic_input_state(
         (ir.key_down("ControlLeft"), ir.key_down("KeyA")),
@@ -484,7 +484,7 @@ def test_held_state_is_reported_in_the_mapped_vocabulary():
 def test_incoming_initial_keys_are_normalised_too():
     """An audit carried over from a previous action may hold either spelling."""
     from desktop import ir
-    from desktop.execute.guest_program import expected_atomic_input_state
+    from desktop.execute.protocol import expected_atomic_input_state
 
     _, keys = expected_atomic_input_state(
         (ir.key_up("Enter"),), initial_buttons=set(), initial_keys={"Return"}
@@ -496,7 +496,7 @@ def test_normalisation_is_idempotent_across_action_boundaries():
     """Held state feeds back in as ``initial_keys``; a second pass must be a
     no-op, or a long trajectory would drift."""
     from desktop import ir
-    from desktop.execute.guest_program import expected_atomic_input_state
+    from desktop.execute.protocol import expected_atomic_input_state
 
     _, first = expected_atomic_input_state(
         (ir.key_down("Return"),), initial_buttons=set(), initial_keys=set()
@@ -547,7 +547,7 @@ def test_the_recording_double_balances_the_same_pair(recording):
     """The double keys held state the same way, or it rejects what the guest runs."""
     from desktop import ir
 
-    result = recording.execute_atomic((ir.key_down("KeyA"), ir.key_up("a")))
+    result = recording.execute((ir.key_down("KeyA"), ir.key_up("a")))
     assert result.ok is True, result.error
     assert recording.audit.held_keys == set()
     # The TRACE keeps the raw spelling, matching what the guest reports.
@@ -568,7 +568,7 @@ def test_the_recording_double_and_the_guest_agree_on_the_trace(recording):
         ir.key_up("ctrlleft"),
     )
     guest = run_guest_program(operations)
-    result = recording.execute_atomic(operations)
+    result = recording.execute(operations)
     assert [(op.kind, list(op.args)) for op in result.operations] == guest.trace()
     assert result.ok is True and guest.payload["ok"] is True
 
@@ -576,7 +576,7 @@ def test_the_recording_double_and_the_guest_agree_on_the_trace(recording):
 def test_an_unbalanced_release_is_still_rejected():
     """The normalisation must not weaken the check it is part of."""
     from desktop import ir
-    from desktop.execute.guest_program import ExecutionError, expected_atomic_input_state
+    from desktop.execute.protocol import ExecutionError, expected_atomic_input_state
 
     with pytest.raises(ExecutionError, match="key not held: shiftleft"):
         expected_atomic_input_state(
@@ -594,7 +594,7 @@ def test_a_held_state_contradiction_is_its_own_class():
     unmatched `up(...)` as its own infrastructure failure and nulls the episode.
     """
     from desktop import ir
-    from desktop.execute.guest_program import (
+    from desktop.execute.protocol import (
         ExecutionError,
         HeldStateError,
         expected_atomic_input_state,
@@ -612,7 +612,7 @@ def test_a_held_state_contradiction_is_its_own_class():
 
 def test_two_genuinely_different_sided_keys_are_still_two_keys():
     from desktop import ir
-    from desktop.execute.guest_program import expected_atomic_input_state
+    from desktop.execute.protocol import expected_atomic_input_state
 
     _, keys = expected_atomic_input_state(
         (ir.key_down("MetaLeft"), ir.key_down("MetaRight")),
@@ -625,7 +625,7 @@ def test_two_genuinely_different_sided_keys_are_still_two_keys():
 def test_a_malformed_key_name_raises_instead_of_being_tracked():
     """``guest_key`` rejects an empty name, so held state cannot contain one."""
     from desktop import ir
-    from desktop.execute.guest_program import expected_atomic_input_state
+    from desktop.execute.protocol import expected_atomic_input_state
 
     with pytest.raises(KeymapError):
         expected_atomic_input_state(

@@ -51,8 +51,8 @@ class Operation:
         return cls(str(payload["kind"]), tuple(payload["args"]))
 
 
-# Argument shapes for the kinds ``desktop.execute.guest_program`` lowers.  No
-# relative member: resolution happens inside a codec's ``compile``.
+# Argument shapes serialized by ``desktop.execute.protocol``. There is no
+# relative member: callers resolve coordinates before constructing this IR.
 
 GLIDE_MAXIMUM_SECONDS = 10.0
 

@@ -1,8 +1,7 @@
 """A prewarming pool of desktop sessions, with leases and a status file.
 
-The pool's entire requirement of a session is ``close() -> None``.  It is generic
-over ``DesktopSessionEnv``, so ``DesktopSession``, a raw ``QemuRuntime``, or a
-caller's own wrapper all satisfy it with no adapter.
+The pool requires ``reset()`` and ``close()``. A released session is reset while
+still leased and is advertised as ready only after that reset succeeds.
 
 A VM boot is 13-16 s and a first boot is worse, so a rollout that starts by
 booting pays that per rollout.  The pool keeps a floor of ready sessions warm in
@@ -469,6 +468,7 @@ def allocate_worker_ports(
 class DesktopSessionEnv(Protocol):
     """The pool's entire requirement of a session."""
 
+    def reset(self) -> object: ...
     def close(self) -> None: ...
 
 
@@ -659,14 +659,10 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
         )
         self.log_dir = self.root_dir / "logs"
         self.log_write_dir = (
-            Path(config.log_runtime_dir)
-            if config.log_runtime_dir is not None
-            else self.log_dir
+            Path(config.log_runtime_dir) if config.log_runtime_dir is not None else self.log_dir
         )
         self.artifact_dir = self.root_dir / "artifacts"
-        self.status_path = (
-            self.status_dir / f"{worker_name or _default_worker_name()}.json"
-        )
+        self.status_path = self.status_dir / f"{worker_name or _default_worker_name()}.json"
         self._session_factory = session_factory
         self._port_allocator = port_allocator
         self._clock = clock
@@ -712,9 +708,7 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
         """Block until a ready session is available or checkout times out."""
         if not self._started:
             self.start()
-        effective_timeout_s = (
-            self.config.checkout_timeout_s if timeout_s is None else timeout_s
-        )
+        effective_timeout_s = self.config.checkout_timeout_s if timeout_s is None else timeout_s
         if effective_timeout_s <= 0:
             raise ValueError("timeout_s must be positive")
         deadline = self._clock() + effective_timeout_s
@@ -754,7 +748,7 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
     def release(
         self, session_id: str, *, failed: bool = False, error: str | None = None
     ) -> None:
-        """Return a leased session and retire or reuse it according to policy."""
+        """Reset a reusable session before advertising it as ready."""
         session: DesktopPoolSession[DesktopEnvT] | None = None
         close_reason: RetireReason = "retired"
         should_retire = False
@@ -767,8 +761,7 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
             session.last_activity_at = session.updated_at
             session.last_error = error
             should_retire = (
-                failed
-                or session.rollouts_completed >= self.config.max_rollouts_per_session
+                failed or session.rollouts_completed >= self.config.max_rollouts_per_session
             )
             if should_retire:
                 self._sessions.pop(session_id, None)
@@ -778,18 +771,45 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
                     self._total_failed += 1
                     self._last_error = error
             else:
-                session.status = "ready"
-                session.leased_at = None
                 session.last_error = None
             self._write_status_locked()
             self._condition.notify_all()
 
         if should_retire and session is not None:
             self._retire_session_async(session, reason=close_reason)
-        else:
+            return
+        if session is None:
+            return
+        try:
+            session.env.reset()
+        except Exception as exc:
+            detail = f"reset failed: {_exception_message(exc)}"
+            removed = False
             with self._condition:
-                self._ensure_min_ready_locked()
-                self._write_status_locked()
+                current = self._sessions.get(session_id)
+                if current is session:
+                    self._sessions.pop(session_id, None)
+                    self._retiring_session_ids.add(session_id)
+                    removed = True
+                    session.last_error = detail
+                    session.updated_at = self._clock()
+                    self._total_failed += 1
+                    self._last_error = detail
+                    self._write_status_locked()
+                    self._condition.notify_all()
+            if removed:
+                self._retire_session_async(session, reason="failed")
+            return
+        with self._condition:
+            current = self._sessions.get(session_id)
+            if current is session:
+                session.status = "ready"
+                session.leased_at = None
+                session.last_error = None
+                session.updated_at = self._clock()
+            self._ensure_min_ready_locked()
+            self._write_status_locked()
+            self._condition.notify_all()
 
     def close(self) -> None:
         """Stop the pool and close every session that is still tracked."""
@@ -841,8 +861,7 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
                 session.updated_at = now
                 session.last_activity_at = now
                 session.last_error = (
-                    "lease timed out after "
-                    f"{self.config.lease_timeout_s:.1f}s without activity"
+                    f"lease timed out after {self.config.lease_timeout_s:.1f}s without activity"
                 )
                 self._total_failed += 1
                 self._total_stale_leases_retired += 1
@@ -974,9 +993,7 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
             self._ensure_min_ready_locked()
             return
         self._retry_scheduled = True
-        _start_daemon_thread(
-            name="desktop-pool-retry", target=self._retry_after_backoff
-        )
+        _start_daemon_thread(name="desktop-pool-retry", target=self._retry_after_backoff)
 
     def _retry_after_backoff(self) -> None:
         """Wait until the current retry deadline, then try to refill the pool."""
@@ -1102,19 +1119,13 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
     def _ready_sessions_locked(self) -> list[DesktopPoolSession[DesktopEnvT]]:
         """Ready sessions ordered by age while the lock is held."""
         return sorted(
-            (
-                session
-                for session in self._sessions.values()
-                if session.status == "ready"
-            ),
+            (session for session in self._sessions.values() if session.status == "ready"),
             key=lambda session: session.created_at,
         )
 
     def _active_session_count_locked(self) -> int:
         return (
-            len(self._sessions)
-            + len(self._starting_sessions)
-            + len(self._retiring_session_ids)
+            len(self._sessions) + len(self._starting_sessions) + len(self._retiring_session_ids)
         )
 
     def _raise_if_closed_locked(self) -> None:
@@ -1133,9 +1144,7 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
         now = self._clock()
         sessions = [
             _session_payload(session, now=now)
-            for session in sorted(
-                self._sessions.values(), key=lambda item: item.session_id
-            )
+            for session in sorted(self._sessions.values(), key=lambda item: item.session_id)
         ]
         starting_sessions = [
             _starting_session_payload(session, now=now)
@@ -1181,9 +1190,7 @@ class DesktopSessionPool[DesktopEnvT: DesktopSessionEnv]:
             "retry_scheduled": self._retry_scheduled,
             "consecutive_start_failures": self._consecutive_start_failures,
             "next_start_attempt_at": self._next_start_attempt_at,
-            "startup_cooldown_remaining_s": max(
-                0.0, self._startup_cooldown_remaining_locked()
-            ),
+            "startup_cooldown_remaining_s": max(0.0, self._startup_cooldown_remaining_locked()),
             "last_error": self._last_error,
             "starting_sessions": starting_sessions,
             "sessions": sessions,
@@ -1222,9 +1229,7 @@ def _session_payload[DesktopEnvT: DesktopSessionEnv](
     return payload
 
 
-def _starting_session_payload(
-    session: StartingDesktopSession, *, now: float
-) -> dict[str, Any]:
+def _starting_session_payload(session: StartingDesktopSession, *, now: float) -> dict[str, Any]:
     lease = session.lease
     payload: dict[str, Any] = {
         "session_id": session.session_id,
@@ -1302,14 +1307,10 @@ def _ensure_symlink_dir(link_path: Path, target_dir: Path) -> None:
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     """Write JSON through a sibling temp file before replacing the target."""
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
 
 
-def _start_daemon_thread(
-    *, name: str, target: Callable[..., None], **kwargs: object
-) -> None:
+def _start_daemon_thread(*, name: str, target: Callable[..., None], **kwargs: object) -> None:
     """Start a daemon thread with keyword arguments for background pool work."""
     threading.Thread(target=target, kwargs=kwargs, name=name, daemon=True).start()

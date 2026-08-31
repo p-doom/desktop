@@ -13,6 +13,7 @@ on the host, so there is no container argv or bind list.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import subprocess
@@ -23,12 +24,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
-from .osworld_client import (
+from .client import (
+    ACTION_EXECUTOR_PATH,
+    ACTION_EXECUTOR_SHA256,
     SECRET_STDIN_EXECUTE_CONTRACT,
+    DesktopClient,
     GuestAgentError,
-    OSWorldClient,
 )
+from .observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
 from .pool import allocate_worker_ports, node_port_lock_dir
 from .qemu import QemuError, QmpClient
 from .readiness import ScreenshotStatus, desktop_screenshot_ready
@@ -36,6 +39,8 @@ from .readiness import ScreenshotStatus, desktop_screenshot_ready
 GUEST_SERVER_SOURCE = "/home/user/server/main.py"
 GUEST_SERVER_DIRECTORY = str(Path(GUEST_SERVER_SOURCE).parent)
 GUEST_SCREENSHOT_PATCH = Path(__file__).with_name("images") / "osworld-cursor-jpeg.patch"
+GUEST_ACTIONS_PATCH = Path(__file__).with_name("images") / "osworld-actions-v1.patch"
+GUEST_ACTION_EXECUTOR = "/usr/local/lib/desktop/guest_executor.py"
 GUEST_SERVER_COMMAND = f"/usr/bin/python {GUEST_SERVER_SOURCE}"
 DEBUG_SERVER_CALL = 'app.run(debug=True, host="0.0.0.0")'
 PRODUCTION_SERVER_CALL = 'app.run(debug=False, host="0.0.0.0")'
@@ -164,6 +169,7 @@ class BuildReport:
 def render_provision_script(config: DesktopImageBuildConfig) -> str:
     """Return the root shell script that turns the upstream image into ours."""
 
+    executor_base64 = base64.b64encode(ACTION_EXECUTOR_PATH.read_bytes()).decode("ascii")
     lines = [
         "set -eux",
         "export DEBIAN_FRONTEND=noninteractive",
@@ -173,10 +179,18 @@ def render_provision_script(config: DesktopImageBuildConfig) -> str:
         "systemctl stop packagekit.service unattended-upgrades.service || true",
         "retry apt-get update",
         "retry apt-get install -y --no-install-recommends " + " ".join(config.apt_packages),
+        f"install -d -m 0755 {Path(GUEST_ACTION_EXECUTOR).parent}",
+        f"printf %s {_shell_quote(executor_base64)} | base64 -d > {GUEST_ACTION_EXECUTOR}",
+        f"chmod 0644 {GUEST_ACTION_EXECUTOR}",
+        f"echo '{ACTION_EXECUTOR_SHA256}  {GUEST_ACTION_EXECUTOR}' | sha256sum -c -",
         f"patch --batch --forward --fuzz=0 -p1 -d {GUEST_SERVER_DIRECTORY} <<'PATCH'\n"
         + GUEST_SCREENSHOT_PATCH.read_text()
         + "PATCH",
+        f"patch --batch --forward --fuzz=0 -p1 -d {GUEST_SERVER_DIRECTORY} <<'PATCH'\n"
+        + GUEST_ACTIONS_PATCH.read_text()
+        + "PATCH",
         f"grep -qF {OBSERVATION_CONTRACT!r} {GUEST_SERVER_SOURCE}",
+        f"grep -qF 'ACTION_EXECUTOR_CONTRACT = \"desktop_actions_v1\"' {GUEST_SERVER_SOURCE}",
         f"grep -qF 'quality=92, subsampling=2, optimize=False' {GUEST_SERVER_SOURCE}",
         f"grep -qF 'mimetype=\"image/jpeg\"' {GUEST_SERVER_SOURCE}",
     ]
@@ -215,6 +229,10 @@ def render_verification_script() -> str:
         f"    ['pgrep', '-x', '-f', {GUEST_SERVER_COMMAND!r}],\n"
         "    capture_output=True, text=True,\n"
         ").stdout.split()\n"
+        "executor_sha256 = subprocess.run(\n"
+        f"    ['sha256sum', {GUEST_ACTION_EXECUTOR!r}],\n"
+        "    capture_output=True, text=True, check=True,\n"
+        ").stdout.split()[0]\n"
         f"source = open({GUEST_SERVER_SOURCE!r}).read()\n"
         "print(json.dumps({\n"
         "    'missing_modules': missing,\n"
@@ -225,6 +243,7 @@ def render_verification_script() -> str:
         "        if importlib.util.find_spec(name) is not None\n"
         "    ],\n"
         f"    'production_server_call': {PRODUCTION_SERVER_CALL!r} in source,\n"
+        "    'action_executor_sha256': executor_sha256,\n"
         "}))\n"
         "PY"
     )
@@ -249,6 +268,8 @@ def _verification_failures(checks: dict[str, object]) -> list[str]:
         failures.append(
             "the guest did not functionally attest the secret-stdin execute contract"
         )
+    if checks.get("action_executor_sha256") != ACTION_EXECUTOR_SHA256:
+        failures.append("the guest action executor does not match this desktop package")
     reloader = checks.get("reloader_disabled")
     if not isinstance(reloader, dict):
         failures.append(f"the reloader probe did not run: {reloader!r}")
@@ -355,6 +376,10 @@ def build_manifest(
         "guest_server_patch_sha256": hashlib.sha256(
             GUEST_SCREENSHOT_PATCH.read_bytes()
         ).hexdigest(),
+        "guest_actions_patch_sha256": hashlib.sha256(
+            GUEST_ACTIONS_PATCH.read_bytes()
+        ).hexdigest(),
+        "guest_action_executor_sha256": ACTION_EXECUTOR_SHA256,
         "guest_server_call": PRODUCTION_SERVER_CALL,
         "secret_stdin_execute_contract": SECRET_STDIN_EXECUTE_CONTRACT,
         "apt_packages": list(config.apt_packages),
@@ -381,7 +406,7 @@ class DesktopImageBuilder:
         self.report = BuildReport()
         self._emit = log or _print_line
         self._process: subprocess.Popen[bytes] | None = None
-        self._client: OSWorldClient | None = None
+        self._client: DesktopClient | None = None
         self._qmp_path: Path | None = None
 
     def log(self, message: str) -> None:
@@ -430,9 +455,7 @@ class DesktopImageBuilder:
     def _create_image(self, target: Path) -> None:
         started = time.monotonic()
         target.unlink(missing_ok=True)
-        argv = image_convert_argv(
-            self.config.qemu_img_binary, self.config.upstream, target
-        )
+        argv = image_convert_argv(self.config.qemu_img_binary, self.config.upstream, target)
         result = subprocess.run(argv, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise RuntimeError(
@@ -470,7 +493,7 @@ class DesktopImageBuilder:
             with (config.runtime_dir / "qemu.log").open("wb") as handle:
                 process = subprocess.Popen(argv, stdout=handle, stderr=subprocess.STDOUT)
                 self._process = process
-                self._client = OSWorldClient(f"http://127.0.0.1:{lease.ports.server}")
+                self._client = DesktopClient(f"http://127.0.0.1:{lease.ports.server}")
                 self._qmp_path = qmp
                 try:
                     started = time.monotonic()
@@ -507,19 +530,11 @@ class DesktopImageBuilder:
         *,
         timeout_s: float = 120.0,
     ) -> tuple[int, str, str]:
-        payload = self._require_client().execute(
-            list(argv), check=False, timeout_s=timeout_s
-        )
-        return (
-            int(payload.get("returncode", 1)),
-            str(payload.get("output", "")),
-            str(payload.get("error", "")),
-        )
+        result = self._require_client().run_guest(list(argv), timeout_s=timeout_s)
+        return result.returncode, result.stdout, result.stderr
 
     def guest_bash(self, script: str, *, timeout_s: float = 120.0) -> str:
-        code, output, error = self.guest_exec(
-            ["bash", "-c", script], timeout_s=timeout_s
-        )
+        code, output, error = self.guest_exec(["bash", "-c", script], timeout_s=timeout_s)
         if code != 0:
             raise GuestCommandError(f"Guest script failed ({code}): {error or output}")
         return output
@@ -535,7 +550,7 @@ class DesktopImageBuilder:
             raise GuestCommandError("No QEMU process is running")
         return self._process
 
-    def _require_client(self) -> OSWorldClient:
+    def _require_client(self) -> DesktopClient:
         if self._client is None:
             raise GuestCommandError("No guest agent is reachable")
         return self._client
@@ -564,9 +579,7 @@ class DesktopImageBuilder:
                 if size == OBSERVATION_SIZE:
                     return
             time.sleep(3)
-        raise GuestCommandError(
-            f"The guest agent was not ready within {timeout_s}s ({detail})"
-        )
+        raise GuestCommandError(f"The guest agent was not ready within {timeout_s}s ({detail})")
 
     def _wait_for_guest(self, timeout_s: float) -> None:
         """Wait for a guest with a DESKTOP, not merely a guest that answers 200.
@@ -670,7 +683,7 @@ class DesktopImageBuilder:
     def _verify(self) -> dict[str, object]:
         started = time.monotonic()
         digest = hashlib.sha256(_SECRET_STDIN_PROBE).hexdigest()
-        self._require_client().execute_with_secret_stdin(
+        self._require_client().run_guest_with_secret(
             [
                 "python3",
                 "-c",
@@ -683,6 +696,7 @@ class DesktopImageBuilder:
         output = self.guest_bash(render_verification_script(), timeout_s=120.0)
         checks: dict[str, object] = json.loads(output.strip().splitlines()[-1])
         checks["secret_stdin_execute_contract"] = SECRET_STDIN_EXECUTE_CONTRACT
+        self._require_client().verify_actions_contract()
         checks["reloader_disabled"] = self._probe_reloader()
         self.report.record("verify", time.monotonic() - started)
         self.log(f"verification: {json.dumps(checks)}")
@@ -715,9 +729,7 @@ class DesktopImageBuilder:
 
     def _hold_guest_request(self) -> tuple[int | None, str | None]:
         try:
-            code, _, _ = self.guest_exec(
-                ["sleep", str(_RELOADER_HOLD_S)], timeout_s=180.0
-            )
+            code, _, _ = self.guest_exec(["sleep", str(_RELOADER_HOLD_S)], timeout_s=180.0)
         except (GuestAgentError, ValueError) as error:
             return None, repr(error)
         return code, None

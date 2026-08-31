@@ -200,8 +200,7 @@ def guest_key(name: str) -> str:
     return resolved
 
 
-#: The only buttons the guest program can press.  ``BUTTON_MASKS`` in
-#: ``guest_program`` must stay in lockstep with this set.
+#: The only buttons the action protocol and guest executor can press.
 POINTER_BUTTONS: frozenset[str] = frozenset({"left", "middle", "right"})
 
 #: X11 button number -> name, for reading a raw event stream back.

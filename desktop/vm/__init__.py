@@ -5,6 +5,7 @@ hand a caller a live guest that answers HTTP, and to prove that a reset actually
 rewound it.
 """
 
+from .client import DesktopClient, GuestAgentError, GuestCommandResult
 from .factory import (
     ConfigError,
     build_desktop_pool,
@@ -18,7 +19,6 @@ from .image_build import (
     DesktopImageBuilder,
     GuestCommandError,
 )
-from .osworld_client import GuestAgentError, GuestCommandResult, OSWorldClient
 from .pool import (
     HUB_PORT_RANGE,
     CheckedOutDesktopSession,
@@ -81,6 +81,7 @@ __all__ = [
     "DebArtifact",
     "DesktopImageBuildConfig",
     "DesktopImageBuilder",
+    "DesktopClient",
     "DesktopPoolConfig",
     "DesktopResetMode",
     "DesktopSession",
@@ -90,7 +91,6 @@ __all__ = [
     "GuestCommandResult",
     "GuestPorts",
     "GuestScript",
-    "OSWorldClient",
     "PortLease",
     "PortRangeLease",
     "QemuError",

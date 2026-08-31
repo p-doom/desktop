@@ -30,15 +30,14 @@ and `apptainer`.
 
 ```python
 from desktop import DisplayGeometry, Operation
-from desktop.execute import Engine, HttpGuiTransport
 from desktop.vm import DesktopSession, QemuRuntime
 
 runtime = QemuRuntime(image=Path("/images/guest.qcow2"))
 with DesktopSession(runtime) as session:
-    engine = Engine(session.start())
-
-    # Either hand it resolved operations directly...
-    engine.apply((Operation("move_to", (640, 400)), Operation("click", ("left",))))
+    receipt = session.execute(
+        (Operation("move_to", (640, 400)), Operation("click", ("left",)))
+    )
+    assert receipt.ok
 
     session.reset()   # ~4.5 s, and it proves the guest actually rewound
 ```
@@ -49,17 +48,16 @@ with DesktopSession(runtime) as session:
 |---|---|
 | `ir.py` | `Operation(kind: str, args: tuple)` — open `kind` vocabulary, never an `Enum`. Includes an explicit `drag(x0,y0,x1,y1)` so a zero-extent drag survives resolution instead of collapsing into a no-op. |
 | `geometry.py` | `DisplayGeometry`, `scale_normalized_coordinate`, `anthropic_scale_coordinates` — copied verbatim from Harbor, for callers resolving model coordinates. |
-| `execute/guest_program.py` | Compiles one action into exactly one ordered guest process, with verified pointer state and guaranteed cleanup. |
-| `execute/transport.py` | The `GuiTransport` protocol and a `urllib` HTTP implementation. |
+| `execute/protocol.py` | Validates operations and serializes the versioned action request. Defines the sole `ExecutionReceipt`. |
 | `execute/keymap.py` | The key and pointer-button name tables, and the chord and transition helpers over them. |
-| `execute/engine.py` | Applies operations, verifies the cursor readback, emits a receipt. |
 | `vm/runtime.py` | The `Runtime` protocol: start, stop, checkpoint, restore, fork. |
 | `vm/qemu.py` | QMP `savevm`/`loadvm` (13.6–16.6 s reboot-revert → 4.4–5.2 s restore), plus CoW `fork`.  KVM or raise; `-accel tcg` only on explicit request. |
 | `vm/readiness.py` | Whether the desktop is up or the framebuffer is still black, from the non-dark-pixel ratio and the luma standard deviation. The `luma_sampler` seam makes the rule testable against synthetic frames with no VM. |
 | `vm/factory.py` | The constructor side: `build_qemu_runtime`, `build_desktop_session`, `qemu_session_factory`, `build_desktop_pool`. Plain functions, explicit config, no name registry and no plugin lookup — you pass an image path, not a provider name. |
-| `vm/session.py` | One isolated desktop with an attested reset: a guest nonce must be gone afterwards, or the reset did not happen. |
-| `vm/pool.py` | Prewarmed sessions, leases with activity timeouts, bounded reuse, an inspectable status file. |
-| `vm/osworld_client.py` | Four endpoints (`/screenshot`, `/screen_size`, `/execute`, `/accessibility`) plus `/cursor_position`. No dispatch, no keymaps. |
+| `vm/session.py` | The stable public desktop handle: actions, observations, trusted guest control, endpoints, and attested reset. |
+| `vm/pool.py` | Prewarmed sessions, leases with activity timeouts, reset-before-ready reuse, and an inspectable status file. |
+| `vm/client.py` | The one host client for `/v1/actions`, observations, and trusted guest commands. It verifies the installed executor hash. |
+| `vm/guest/executor.py` | The self-contained XTEST executor installed into the guest image and invoked once per action. |
 | `vm/sandbox_protocol.py` | NeMo-Gym's sandbox protocol including `ConnectableProvider`, plus our own Apptainer implementation. |
 | `vm/images/` | Two tiers: KVM (full parity) and non-KVM (no OSWorld parity, ever — see that directory's README). |
 | `vm/image_build.py` | The producer of the guest qcow2 every other module treats as a pinned input: boots the upstream image, installs the grader libraries and tools, verifies them from inside the guest, and publishes the image beside a manifest of what went in. |

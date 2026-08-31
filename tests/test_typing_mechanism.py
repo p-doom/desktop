@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from desktop import ir
-from desktop.execute.guest_program import ExecutionError, compile_atomic_guest_program
+from desktop.execute.protocol import ExecutionError, build_action_request
+from desktop.vm.client import ACTION_EXECUTOR_PATH
 
 from .support.guest_runner import run_guest_program
 
@@ -18,9 +19,8 @@ UNICODE_TEXT = "héllo ✓"
     ["ls", ASCII_TEXT, "", " ", "~", "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}"],
 )
 def test_printable_ascii_uses_the_direct_xtest_program(text):
-    source, _ = compile_atomic_guest_program(
-        (ir.coalesced_type(text),), initial_buttons=set(), initial_keys=set()
-    )
+    build_action_request((ir.coalesced_type(text),), initial_buttons=set(), initial_keys=set())
+    source = ACTION_EXECUTOR_PATH.read_text()
     assert "from Xlib import X" in source
     assert "xtest.fake_input" in source
     assert "pyautogui" not in source
@@ -39,7 +39,7 @@ def test_unicode_and_supported_controls_use_the_direct_xtest_program(text):
 
 def test_typing_rejects_a_non_string_payload_at_compile_time():
     with pytest.raises(ExecutionError, match="typing text must be a string"):
-        compile_atomic_guest_program(
+        build_action_request(
             (ir.Operation("coalesced_type", (b"ls",)),),
             initial_buttons=set(),
             initial_keys=set(),
@@ -92,7 +92,7 @@ def test_typing_temporarily_clears_and_restores_a_held_modifier():
 @pytest.mark.parametrize("text", ["\x00", "\x1f", "\x7f", "\ud800"])
 def test_untypable_codepoints_fail_at_compile_time(text):
     with pytest.raises(ExecutionError, match="typing text"):
-        compile_atomic_guest_program(
+        build_action_request(
             (ir.coalesced_type(text),), initial_buttons=set(), initial_keys=set()
         )
 
@@ -100,7 +100,7 @@ def test_untypable_codepoints_fail_at_compile_time(text):
 def test_ascii_type_rejects_unicode_and_embedded_enter_at_compile_time():
     for text in ("é", "echo\n"):
         with pytest.raises(ExecutionError):
-            compile_atomic_guest_program(
+            build_action_request(
                 (ir.ascii_type(text),), initial_buttons=set(), initial_keys=set()
             )
 

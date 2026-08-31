@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from desktop import ir
-from desktop.execute.guest_program import (
+from desktop.execute.protocol import (
     ExecutionError,
     expected_atomic_input_state,
     lower_guest_operations,
@@ -133,7 +133,7 @@ def test_a_held_stroke_leaves_no_button_held():
 
 def test_the_recording_double_reproduces_a_held_stroke(recording):
     guest = run_guest_program(HELD_STROKE)
-    result = recording.execute_atomic(HELD_STROKE)
+    result = recording.execute(HELD_STROKE)
     assert [(op.kind, list(op.args)) for op in result.operations] == guest.trace()
     assert result.ok is True
 
@@ -147,7 +147,7 @@ def test_drag_lowers_to_press_move_release_in_one_process():
         "drag_end",
         "drag_release",
     ]
-    assert run.payload["guest_process_count"] == 1
+    assert run.payload["executor_process_count"] == 1
     assert run.trace() == [("drag", [100, 100, 400, 300])]
 
 
@@ -234,32 +234,32 @@ def test_a_drag_after_a_held_press_of_a_different_button_executes():
 
 def test_recording_drag_matches_the_guest_trace(recording):
     guest = run_guest_program((ir.drag(10, 10, 40, 40),))
-    result = recording.execute_atomic((ir.drag(10, 10, 40, 40),))
+    result = recording.execute((ir.drag(10, 10, 40, 40),))
     assert [(op.kind, list(op.args)) for op in result.operations] == guest.trace()
 
 
 def test_recording_drag_records_zero_extent(recording):
-    result = recording.execute_atomic((ir.drag(7, 7, 7, 7),))
+    result = recording.execute((ir.drag(7, 7, 7, 7),))
     (primitive,) = result.backend_primitives
     assert primitive["zero_extent"] is True
 
 
 def test_recording_glide_matches_the_guest_trace_and_moves_the_cursor(recording):
     guest = run_guest_program((ir.glide_to(88, 99, 0.2),))
-    result = recording.execute_atomic((ir.glide_to(88, 99, 0.2),))
+    result = recording.execute((ir.glide_to(88, 99, 0.2),))
     assert [(op.kind, list(op.args)) for op in result.operations] == guest.trace()
     assert recording.cursor_position() == (88, 99)
 
 
 def test_recording_drag_is_balanced_and_holds_nothing_afterwards(recording):
-    recording.execute_atomic((ir.drag(1, 1, 2, 2),))
+    recording.execute((ir.drag(1, 1, 2, 2),))
     assert recording.audit.held_buttons == set()
 
 
 # --------------------------------------------------------------------------- #
 # STANDING INVARIANT: the double must agree with the guest it doubles
 #
-# ``RecordingTransport`` exists so the executor is testable without a VM, and
+# ``RecordingClient`` exists so the executor is testable without a VM, and
 # EVERY test built on it inherits its fidelity.  It was found disagreeing with the
 # real guest program on `scroll`: two operations for a diagonal, none at all for
 # `scroll(0, 0)`, against the guest's one.  A double that diverges silently
@@ -316,7 +316,7 @@ def test_the_double_and_the_guest_agree_on_the_operation_trace(name, recording):
     operations = CANONICAL_ACTIONS[name]
     guest = run_guest_program(operations)
     assert guest.payload is not None, guest.stderr
-    result = recording.execute_atomic(operations)
+    result = recording.execute(operations)
     recorded = [(op.kind, list(op.args)) for op in result.operations]
     assert len(recorded) == len(guest.trace()), (
         f"{name}: double produced {len(recorded)} operations, "
@@ -329,7 +329,7 @@ def test_the_double_and_the_guest_agree_on_the_operation_trace(name, recording):
 def test_the_double_and_the_guest_agree_on_success_and_held_state(name, recording):
     operations = CANONICAL_ACTIONS[name]
     guest = run_guest_program(operations)
-    result = recording.execute_atomic(operations)
+    result = recording.execute(operations)
     assert result.ok is guest.payload["ok"], name
     assert result.failure_kind == guest.payload["failure_kind"], name
     assert (
@@ -344,12 +344,12 @@ def test_the_double_and_the_guest_agree_on_success_and_held_state(name, recordin
 def test_the_double_and_the_guest_agree_on_the_lowering(name, recording):
     operations = CANONICAL_ACTIONS[name]
     guest = run_guest_program(operations)
-    result = recording.execute_atomic(operations)
+    result = recording.execute(operations)
     assert [op.as_dict() for op in result.lowered_operations] == guest.payload[
         "lowered_operations"
     ], name
-    assert [op.as_dict() for op in result.semantic_operations] == guest.payload[
-        "semantic_operations"
+    assert [op.as_dict() for op in result.requested_operations] == guest.request[
+        "operations"
     ], name
 
 
@@ -371,6 +371,6 @@ def test_the_invariant_covers_every_kind_the_executor_lowers():
 def test_the_coalesced_type_kind_also_agrees(recording):
     operations = (ir.coalesced_type("héllo ✓"),)
     guest = run_guest_program(operations)
-    result = recording.execute_atomic(operations)
+    result = recording.execute(operations)
     assert [(op.kind, list(op.args)) for op in result.operations] == guest.trace()
     assert result.ok is guest.payload["ok"] is True

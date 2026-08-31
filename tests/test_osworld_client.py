@@ -24,13 +24,13 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from desktop.vm.observation import OBSERVATION_SIZE
-from desktop.vm.osworld_client import (
+from desktop.vm.client import (
     SECRET_STDIN_EXECUTE_CONTRACT,
+    DesktopClient,
     GuestAgentError,
-    OSWorldClient,
     _decode_detached_result,
 )
+from desktop.vm.observation import OBSERVATION_SIZE
 
 #: What the fake agent should answer, per path.  Mutated per test.
 ROUTES: dict = {}
@@ -91,16 +91,14 @@ def agent_server():
 def agent(agent_server):
     """A client pointed at the fake agent, with a clean route table."""
     ROUTES.clear()
-    return OSWorldClient(f"http://127.0.0.1:{agent_server.server_port}", timeout_s=5.0)
+    return DesktopClient(f"http://127.0.0.1:{agent_server.server_port}", timeout_s=5.0)
 
 
 def _jpeg(
     value: int = 0, *, mode: str = "RGB", size: tuple[int, int] = OBSERVATION_SIZE
 ) -> bytes:
     buffer = io.BytesIO()
-    color: int | tuple[int, int, int] = (
-        (value, value, value) if mode == "RGB" else value
-    )
+    color: int | tuple[int, int, int] = (value, value, value) if mode == "RGB" else value
     Image.new(mode, size, color).save(
         buffer, format="JPEG", quality=92, subsampling=2, optimize=False
     )
@@ -119,9 +117,7 @@ def _cursor_composited_jpeg() -> bytes:
     )
     screenshot.paste(cursor, (960, 540), cursor)
     encoded = io.BytesIO()
-    screenshot.save(
-        encoded, format="JPEG", quality=92, subsampling=2, optimize=False
-    )
+    screenshot.save(encoded, format="JPEG", quality=92, subsampling=2, optimize=False)
     return encoded.getvalue()
 
 
@@ -134,8 +130,8 @@ def _json_route(payload, status=200):
 
 
 def test_a_trailing_slash_in_the_base_url_is_normalised():
-    assert OSWorldClient("http://host:5000/").base_url == "http://host:5000"
-    assert OSWorldClient("http://host:5000///").base_url == "http://host:5000"
+    assert DesktopClient("http://host:5000/").base_url == "http://host:5000"
+    assert DesktopClient("http://host:5000///").base_url == "http://host:5000"
 
 
 def test_a_screenshot_comes_back_as_its_original_jpeg_bytes(agent):
@@ -158,7 +154,7 @@ def test_a_non_200_screenshot_is_an_error(agent):
 
 
 def test_an_unreachable_agent_raises_rather_than_hanging():
-    client = OSWorldClient("http://127.0.0.1:1", timeout_s=1.0)
+    client = DesktopClient("http://127.0.0.1:1", timeout_s=1.0)
     with pytest.raises(GuestAgentError, match="failed"):
         client.screenshot()
 
@@ -229,38 +225,42 @@ def test_an_http_error_status_is_reported_with_its_body(agent):
         agent.screen_size()
 
 
-def test_a_successful_execute_returns_the_agents_object(agent):
+def test_a_successful_guest_command_returns_its_streams(agent):
     ROUTES["/execute"] = _json_route(
-        {"status": "success", "returncode": 0, "output": "hello\n"}
+        {"status": "success", "returncode": 0, "output": "hello\n", "error": ""}
     )
-    assert agent.execute(["echo", "hello"])["output"] == "hello\n"
+    result = agent.run_guest(["echo", "hello"])
+    assert result.returncode == 0
+    assert result.stdout == "hello\n"
+    assert result.stderr == ""
 
 
-def test_a_failed_execute_raises_when_checked(agent):
+def test_a_failed_guest_command_returns_its_status(agent):
     ROUTES["/execute"] = _json_route(
-        {"status": "error", "returncode": 2, "error": "no such file"}
+        {
+            "status": "error",
+            "returncode": 2,
+            "output": "",
+            "error": "no such file",
+        }
     )
-    with pytest.raises(GuestAgentError, match="guest command failed"):
-        agent.execute(["false"])
+    result = agent.run_guest(["false"])
+    assert result.returncode == 2
+    assert result.stderr == "no such file"
 
 
-def test_a_failed_execute_is_returned_when_unchecked(agent):
-    ROUTES["/execute"] = _json_route({"status": "error", "returncode": 2})
-    assert agent.execute(["false"], check=False)["returncode"] == 2
-
-
-def test_a_nonzero_returncode_with_success_status_still_fails(agent):
-    """Both conditions are required, so a guest that reports success with a
-    non-zero code cannot slip through."""
-    ROUTES["/execute"] = _json_route({"status": "success", "returncode": 1})
-    with pytest.raises(GuestAgentError, match="guest command failed"):
-        agent.execute(["false"])
+def test_a_status_that_contradicts_the_returncode_is_not_a_command_result(agent):
+    ROUTES["/execute"] = _json_route(
+        {"status": "success", "returncode": 1, "output": "", "error": "failed"}
+    )
+    with pytest.raises(GuestAgentError, match="invalid result"):
+        agent.run_guest(["false"])
 
 
 def test_a_non_object_execute_response_is_an_error(agent):
     ROUTES["/execute"] = _json_route(["not", "an", "object"])
     with pytest.raises(GuestAgentError, match="non-object"):
-        agent.execute(["true"])
+        agent.run_guest(["true"])
 
 
 def test_execute_never_asks_the_agent_for_a_shell(agent):
@@ -271,7 +271,7 @@ def test_execute_never_asks_the_agent_for_a_shell(agent):
         pass
 
     def route():
-        return _json_route({"status": "success", "returncode": 0})
+        return _json_route({"status": "success", "returncode": 0, "output": "", "error": ""})
 
     ROUTES["/execute"] = route
     # Inspect the request body by intercepting at the client level instead.
@@ -282,7 +282,7 @@ def test_execute_never_asks_the_agent_for_a_shell(agent):
         return original(method, path, payload=payload, timeout_s=timeout_s)
 
     agent._request_json = spy  # type: ignore[method-assign]
-    agent.execute(["python", "-c", "print(1)"])
+    agent.run_guest(["python", "-c", "print(1)"])
     assert seen["payload"] == {"command": ["python", "-c", "print(1)"], "shell": False}
 
 
@@ -321,9 +321,7 @@ def test_a_cursor_position_pair_is_parsed(agent):
     "payload", [{"x": 11, "y": 22}, {"x": 1}, [1], [1, 2, 3], "11,22", None]
 )
 def test_a_malformed_cursor_position_is_an_error(agent, payload):
-    """Including the ``{"x", "y"}`` object: ``HttpGuiTransport`` reads the same
-    endpoint and has only ever accepted the array, so accepting both here made
-    two readers of one endpoint disagree about its wire format."""
+    """Including the ``{"x", "y"}`` object: the endpoint has one wire shape."""
     ROUTES["/cursor_position"] = _json_route(payload)
     with pytest.raises(GuestAgentError, match="invalid cursor position"):
         agent.cursor_position()
@@ -368,7 +366,7 @@ def test_wait_ready_becomes_ready_after_a_few_failures(agent):
 
 
 def test_wait_ready_on_an_unreachable_agent_times_out():
-    client = OSWorldClient("http://127.0.0.1:1", timeout_s=0.2)
+    client = DesktopClient("http://127.0.0.1:1", timeout_s=0.2)
     with pytest.raises(TimeoutError, match="not ready"):
         client.wait_ready(timeout_s=0.4, poll_s=0.05)
 
@@ -422,7 +420,7 @@ def test_settled_honours_the_minimum_delay(agent):
     assert time.monotonic() - started >= 0.2
 
 
-# ``write_file`` and ``execute_detached`` are almost entirely program text: one
+# ``write_guest_file`` and ``spawn_guest`` are almost entirely program text: one
 # Python one-liner and three POSIX shell scripts.  An agent that recorded the
 # argv would assert that this module composed the strings it meant to compose and
 # nothing about whether they work, so the fake below shells out for real and the
@@ -524,7 +522,7 @@ def executing_agent(executing_agent_server):
     AGENT_PROCESS["pid"] = None
     AGENT_PROCESS_STARTED.clear()
     AGENT_RESPONSES.clear()
-    return OSWorldClient(
+    return DesktopClient(
         f"http://127.0.0.1:{executing_agent_server.server_port}", timeout_s=30.0
     )
 
@@ -534,16 +532,14 @@ def test_a_pushed_file_arrives_byte_for_byte(executing_agent, tmp_path):
     precisely so nothing on either side interprets it."""
     target = tmp_path / "payload.bin"
     content = bytes(range(256)) + b"\n'\"\\ \x00 end"
-    executing_agent.write_file(str(target), content)
+    executing_agent.write_guest_file(str(target), content)
     assert target.read_bytes() == content
 
 
-def test_a_pushed_file_is_never_program_text_the_guest_could_run(
-    executing_agent, tmp_path
-):
+def test_a_pushed_file_is_never_program_text_the_guest_could_run(executing_agent, tmp_path):
     target = tmp_path / "quoted.txt"
     dangerous = b"#!/bin/sh\nshutdown --now\n"
-    executing_agent.write_file(str(target), dangerous)
+    executing_agent.write_guest_file(str(target), dangerous)
     assert target.read_bytes() == dangerous
     command = AGENT_CALLS[-1]["command"]
     assert command[:2] == ["python3", "-c"]
@@ -554,13 +550,13 @@ def test_a_pushed_file_is_never_program_text_the_guest_could_run(
 
 def test_a_relative_guest_path_is_refused(executing_agent):
     with pytest.raises(ValueError, match="must be absolute"):
-        executing_agent.write_file("relative/path.txt", b"x")
+        executing_agent.write_guest_file("relative/path.txt", b"x")
     assert AGENT_CALLS == [], "a refused path must not reach the guest"
 
 
 def test_a_file_too_large_for_one_argv_element_is_refused(executing_agent, tmp_path):
     with pytest.raises(ValueError, match="do not fit in one guest argv element"):
-        executing_agent.write_file(str(tmp_path / "huge.bin"), b"x" * 99_000)
+        executing_agent.write_guest_file(str(tmp_path / "huge.bin"), b"x" * 99_000)
     assert AGENT_CALLS == []
 
 
@@ -570,17 +566,15 @@ def test_the_largest_permitted_file_really_reaches_the_guest(executing_agent, tm
     above while refusing files the transport can carry."""
     target = tmp_path / "big.bin"
     content = b"x" * 97_000
-    executing_agent.write_file(str(target), content)
+    executing_agent.write_guest_file(str(target), content)
     assert target.read_bytes() == content
 
 
-def test_a_missing_parent_directory_is_reported_rather_than_created(
-    executing_agent, tmp_path
-):
+def test_a_missing_parent_directory_is_reported_rather_than_created(executing_agent, tmp_path):
     """A caller that named a path whose directory does not exist named the wrong
     path; creating it silently is guessing."""
     with pytest.raises(GuestAgentError, match="guest command failed"):
-        executing_agent.write_file(str(tmp_path / "absent" / "f.txt"), b"x")
+        executing_agent.write_guest_file(str(tmp_path / "absent" / "f.txt"), b"x")
     assert not (tmp_path / "absent").exists()
 
 
@@ -597,7 +591,7 @@ def test_secret_stdin_is_a_pipe_and_never_enters_cmdline_logs_or_result(
 
     def invoke() -> None:
         try:
-            executing_agent.execute_with_secret_stdin(
+            executing_agent.run_guest_with_secret(
                 ["python3", "-c", program], secret=secret, timeout_s=10.0
             )
         except BaseException as error:
@@ -632,7 +626,7 @@ def test_secret_stdin_is_a_pipe_and_never_enters_cmdline_logs_or_result(
 def test_an_old_guest_is_refused_before_secret_bytes_are_sent(executing_agent):
     AGENT_CAPABILITY["contract"] = None
     with pytest.raises(GuestAgentError, match="GET /execute returned 405"):
-        executing_agent.execute_with_secret_stdin(
+        executing_agent.run_guest_with_secret(
             ["true"], secret=b"must-not-be-sent", timeout_s=5.0
         )
     assert AGENT_CALLS == []
@@ -641,7 +635,7 @@ def test_an_old_guest_is_refused_before_secret_bytes_are_sent(executing_agent):
 def test_a_wrong_secret_stdin_contract_is_refused_before_post(executing_agent):
     AGENT_CAPABILITY["contract"] = "desktop_execute_secret_stdin_v0"
     with pytest.raises(GuestAgentError, match="does not attest"):
-        executing_agent.execute_with_secret_stdin(
+        executing_agent.run_guest_with_secret(
             ["true"], secret=b"must-not-be-sent", timeout_s=5.0
         )
     assert AGENT_CALLS == []
@@ -650,12 +644,12 @@ def test_a_wrong_secret_stdin_contract_is_refused_before_post(executing_agent):
 @pytest.mark.parametrize("secret", [b"", "password", bytearray(b"password")])
 def test_secret_stdin_accepts_only_non_empty_bytes(executing_agent, secret):
     with pytest.raises(ValueError, match="secret must be non-empty bytes"):
-        executing_agent.execute_with_secret_stdin(["true"], secret=secret)
+        executing_agent.run_guest_with_secret(["true"], secret=secret)
     assert AGENT_CALLS == []
 
 
 def test_a_detached_command_returns_its_code_and_both_streams(executing_agent):
-    result = executing_agent.execute_detached(
+    result = executing_agent.spawn_guest(
         ["sh", "-c", "printf to-out; printf to-err >&2; exit 3"], timeout_s=20.0
     )
     assert result.returncode == 3
@@ -669,9 +663,7 @@ def test_a_detached_command_does_not_wait_for_a_survivor_it_spawned(executing_ag
     long after the command exited -- here for the five seconds of the ``sleep``.
     Redirecting the guest's stdio to files is what breaks that hold."""
     started = time.monotonic()
-    result = executing_agent.execute_detached(
-        ["sh", "-c", "sleep 5 & echo started"], timeout_s=30.0
-    )
+    result = executing_agent.spawn_guest(["sh", "-c", "sleep 5 & echo started"], timeout_s=30.0)
     elapsed = time.monotonic() - started
     assert result.returncode == 0
     assert result.stdout.strip() == "started"
@@ -682,24 +674,24 @@ def test_a_detached_command_that_overruns_its_timeout_raises_and_cleans_up(
     executing_agent,
 ):
     with pytest.raises(TimeoutError, match="did not finish within"):
-        executing_agent.execute_detached(["sleep", "5"], timeout_s=0.5)
+        executing_agent.spawn_guest(["sleep", "5"], timeout_s=0.5)
     base = AGENT_CALLS[0]["command"][4]
     for suffix in (".pid", ".rc", ".out", ".err"):
         assert not Path(base + suffix).exists(), f"{suffix} survived the timeout"
     discard = AGENT_CALLS[-1]["command"]
-    assert discard[2].startswith("base=$1\nif [ -n \"$2\" ]; then kill")
+    assert discard[2].startswith('base=$1\nif [ -n "$2" ]; then kill')
     assert discard[5].isdigit(), "a timeout must discard with the pid, to kill it"
 
 
 def test_a_finished_detached_command_is_discarded_without_a_kill(executing_agent):
-    executing_agent.execute_detached(["true"], timeout_s=20.0)
+    executing_agent.spawn_guest(["true"], timeout_s=20.0)
     discard = AGENT_CALLS[-1]["command"]
-    assert discard[2].startswith("base=$1\nif [ -n \"$2\" ]; then kill")
+    assert discard[2].startswith('base=$1\nif [ -n "$2" ]; then kill')
     assert discard[5] == "", "nothing is left to kill, so nothing may be killed"
 
 
 def test_the_environment_reaches_the_command(executing_agent):
-    result = executing_agent.execute_detached(
+    result = executing_agent.spawn_guest(
         ["sh", "-c", 'printf %s "$DESKTOP_TEST_TOKEN"'],
         timeout_s=20.0,
         env={"DESKTOP_TEST_TOKEN": "a value with spaces"},
@@ -711,20 +703,20 @@ def test_an_environment_name_containing_an_equals_sign_is_refused(executing_agen
     """``env`` splits on the FIRST ``=``, so ``{"A=B": "c"}`` would silently set
     ``A`` to ``B=c`` instead of failing."""
     with pytest.raises(ValueError, match="invalid guest command environment name"):
-        executing_agent.execute_detached(["true"], timeout_s=5.0, env={"A=B": "c"})
+        executing_agent.spawn_guest(["true"], timeout_s=5.0, env={"A=B": "c"})
     assert AGENT_CALLS == []
 
 
 @pytest.mark.parametrize("argv", [[], [""], ["ok", ""]])
 def test_an_empty_argv_element_is_refused(executing_agent, argv):
     with pytest.raises(ValueError, match="at least one non-empty string"):
-        executing_agent.execute_detached(argv, timeout_s=5.0)
+        executing_agent.spawn_guest(argv, timeout_s=5.0)
 
 
 @pytest.mark.parametrize("timeout_s", [0.0, -1.0])
 def test_a_non_positive_detached_timeout_is_refused(executing_agent, timeout_s):
     with pytest.raises(ValueError, match="timeout_s must be positive"):
-        executing_agent.execute_detached(["true"], timeout_s=timeout_s)
+        executing_agent.spawn_guest(["true"], timeout_s=timeout_s)
 
 
 def test_a_detached_command_survives_a_restart_of_the_guest_agent(executing_agent):
@@ -732,7 +724,7 @@ def test_a_detached_command_survives_a_restart_of_the_guest_agent(executing_agen
     again within seconds; each of the three control calls is idempotent so that
     the command underneath is unaffected."""
     AGENT_FAULTS["reject_next"] = 2
-    result = executing_agent.execute_detached(["echo", "still here"], timeout_s=20.0)
+    result = executing_agent.spawn_guest(["echo", "still here"], timeout_s=20.0)
     assert result.returncode == 0
     assert result.stdout.strip() == "still here"
     assert AGENT_FAULTS["reject_next"] == 0
@@ -741,18 +733,16 @@ def test_a_detached_command_survives_a_restart_of_the_guest_agent(executing_agen
 def test_a_guest_channel_that_never_answers_gives_up(executing_agent, monkeypatch):
     """Eight attempts, not forever.  The backoff is flattened because the count
     and the give-up are under test, not the wall-clock of the sleeps."""
-    import desktop.vm.osworld_client as client_module
+    import desktop.vm.client as client_module
 
     monkeypatch.setattr(client_module, "_DETACHED_RETRY_BACKOFF_S", 0.0)
     AGENT_FAULTS["reject_next"] = 8
     with pytest.raises(GuestAgentError, match="channel failed 8 times"):
-        executing_agent.execute_detached(["true"], timeout_s=20.0)
+        executing_agent.spawn_guest(["true"], timeout_s=20.0)
     assert AGENT_FAULTS["reject_next"] == 0, "it must have used every attempt"
 
 
-@pytest.mark.parametrize(
-    "output", ["", "0\n", "0\nYQ==\n\nextra\n", "not-a-code\nYQ==\n\n"]
-)
+@pytest.mark.parametrize("output", ["", "0\n", "0\nYQ==\n\nextra\n", "not-a-code\nYQ==\n\n"])
 def test_a_malformed_detached_result_is_refused(output):
     """Three lines, the first an exit code.  Anything else is a guest that
     answered something other than the collect script's output."""

@@ -2,7 +2,7 @@
 
 Not on the original risk list, but ``pool.py`` is the largest file in the package
 and was the second least-exercised.  Everything here runs without a VM because the
-pool's entire requirement of a session is ``close() -> None``.
+pool's entire requirement of a session is ``reset()`` plus ``close()``.
 
 Two seams make it testable: ``session_factory`` and ``port_allocator`` are both
 injected, and ``clock`` is injectable, so lease expiry is testable without
@@ -31,13 +31,26 @@ from desktop.vm.pool import (
 
 
 class FakeSession:
-    """A pooled session: it only has to close."""
+    """A pooled session with observable reset and close boundaries."""
 
     def __init__(self, lease: PortLease) -> None:
         self.lease = lease
         self.closed = 0
         self.close_raises = False
+        self.reset_raises = False
+        self.reset_count = 0
+        self.reset_started = threading.Event()
+        self.reset_gate: threading.Event | None = None
         self.calls: list[str] = []
+
+    def reset(self) -> FakeSession:
+        self.reset_count += 1
+        self.reset_started.set()
+        if self.reset_gate is not None:
+            self.reset_gate.wait(10)
+        if self.reset_raises:
+            raise RuntimeError("reset exploded")
+        return self
 
     def close(self) -> None:
         self.closed += 1
@@ -239,7 +252,39 @@ def test_a_released_session_is_handed_out_again(pool_factory):
     first.release()
     second = pool.checkout(timeout_s=5)
     assert second.session_id == identifier
+    assert second.env.reset_count == 1
     second.release()
+
+
+def test_a_session_stays_leased_until_its_reset_finishes(pool_factory):
+    pool = pool_factory(min_ready_sessions=1, max_rollouts_per_session=10)
+    pool.start()
+    handle = pool.checkout(timeout_s=5)
+    gate = threading.Event()
+    handle.env.reset_gate = gate
+    release = threading.Thread(target=handle.release)
+    release.start()
+    assert handle.env.reset_started.wait(timeout=5)
+    assert pool.snapshot()["leased"] == 1
+    assert pool.snapshot()["ready"] == 0
+    gate.set()
+    release.join(timeout=5)
+    assert not release.is_alive()
+    assert pool.snapshot()["leased"] == 0
+    assert pool.snapshot()["ready"] == 1
+
+
+def test_a_session_whose_reset_fails_is_retired(pool_factory):
+    pool = pool_factory(min_ready_sessions=1, max_rollouts_per_session=10)
+    pool.start()
+    handle = pool.checkout(timeout_s=5)
+    failed = handle.env
+    failed.reset_raises = True
+    handle.release()
+    assert wait_until(lambda: failed.closed == 1)
+    assert pool.snapshot()["total_failed"] == 1
+    assert "reset failed" in (pool.snapshot()["last_error"] or "")
+    assert wait_until(lambda: len(pool_factory.built) == 2)
 
 
 def test_checkout_times_out_when_nothing_can_be_started(pool_factory):

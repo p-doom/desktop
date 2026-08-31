@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from desktop import ir
-from desktop.execute.guest_program import compile_atomic_guest_program
+from desktop.execute.protocol import build_action_request
 from desktop.ir import Operation, scroll_deltas
 from tests.support.guest_runner import run_guest_program
 
@@ -48,11 +48,11 @@ def test_constructor_and_reader_round_trip():
     assert scroll_deltas(ir.scroll(2, -9).args) == (2, -9)
 
 
-def _compile_scroll(operation: Operation) -> str:
-    program, _ = compile_atomic_guest_program(
+def _compile_scroll(operation: Operation) -> dict:
+    request, _, _ = build_action_request(
         (operation,), initial_buttons=set(), initial_keys=set()
     )
-    return program
+    return request
 
 
 def _scroll_details(operation: Operation) -> list[int]:
@@ -123,41 +123,27 @@ def test_recording_transport_trace_matches_the_guest_trace(recording, args):
     """
     dx, dy = scroll_deltas(args)
     guest = run_guest_program((Operation("scroll", args),))
-    result = recording.execute_atomic((Operation("scroll", args),))
+    result = recording.execute((Operation("scroll", args),))
     assert [(op.kind, list(op.args)) for op in result.operations] == guest.trace()
     assert [(op.kind, op.args) for op in result.operations] == [("scroll", (dx, dy))]
 
 
 def test_recording_transport_scroll_total_counts_vertical_ticks(recording):
-    recording.execute_atomic((ir.scroll(0, 3),))
-    recording.execute_atomic((ir.scroll(9, -1),))
-    recording.execute_atomic((ir.scroll(0, 5),))
+    recording.execute((ir.scroll(0, 3),))
+    recording.execute((ir.scroll(9, -1),))
+    recording.execute((ir.scroll(0, 5),))
     assert recording.audit.scroll_total == 3 - 1 + 5
 
 
 def test_audit_absorption_reads_the_vertical_axis_of_a_scroll_trace():
-    """``HttpGuiTransport._absorb`` reads index 1, i.e. dy, of a two-axis trace."""
-    from desktop.execute.guest_program import AtomicExecutionResult
-    from desktop.execute.transport import HttpGuiTransport
+    from desktop.vm.client import DesktopClient
 
-    transport = HttpGuiTransport("http://127.0.0.1:1")
-    result = AtomicExecutionResult(
-        ok=True,
-        cursor=(0, 0),
-        cursor_before=(0, 0),
-        cursor_after=(0, 0),
-        pointer_button_mask=0,
-        observed_pointer_button_mask=0,
-        expected_pointer_button_mask=0,
-        guest_process_count=1,
-        guest_returncode=0,
-        raw_result_marker="",
-        cleanup_attempted=False,
-        error=None,
-        failure_kind=None,
-        operations=(Operation("scroll", (11, -4)),),
-        semantic_operations=(),
-        lowered_operations=(),
+    client = DesktopClient("http://127.0.0.1:1")
+    client._absorb_action(
+        {
+            "operations": (Operation("scroll", (11, -4)),),
+            "pointer_button_mask": 0,
+            "held_keys": (),
+        }
     )
-    transport._absorb(result)
-    assert transport.audit.scroll_total == -4
+    assert client.audit.scroll_total == -4

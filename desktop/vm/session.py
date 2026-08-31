@@ -24,14 +24,16 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Self
 
-from ..execute.transport import HttpGuiTransport
-from .osworld_client import OSWorldClient
-from .runtime import Runtime
+from ..execute.protocol import ExecutionReceipt
+from ..ir import Operation
+from .client import DesktopClient, GuestCommandResult
+from .runtime import GuestPorts, Runtime
 
 GUEST_JSON_MARKER = "DESKTOP_ENV_JSON="
 
@@ -75,9 +77,7 @@ def task_unique_session_id() -> str:
 
 
 def canonical_json(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode(
-        "utf-8"
-    )
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
 
 
 def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
@@ -111,25 +111,21 @@ class GuestScript:
     parsing the whole of stdout as JSON fails intermittently and unreproducibly.
     """
 
-    def __init__(self, client: OSWorldClient, *, marker: str = GUEST_JSON_MARKER) -> None:
+    def __init__(self, client: DesktopClient, *, marker: str = GUEST_JSON_MARKER) -> None:
         self.client = client
         self.marker = marker
 
     def run_json(self, program: str, *, timeout_s: float | None = None) -> Any:
-        result = self.client.execute(
-            ["python3", "-c", program], check=True, timeout_s=timeout_s
-        )
+        result = self.client.run_guest(["python3", "-c", program], timeout_s=timeout_s)
+        if result.returncode != 0:
+            raise SessionError(f"guest script failed: {result.stderr}")
         return self.parse(result)
 
-    def parse(self, result: dict[str, Any]) -> Any:
-        output = result.get("output")
-        if not isinstance(output, str):
-            raise SessionError("guest script produced no stdout")
+    def parse(self, result: GuestCommandResult) -> Any:
+        output = result.stdout
         lines = [line for line in output.splitlines() if line.startswith(self.marker)]
         if len(lines) != 1:
-            raise SessionError(
-                f"guest script emitted {len(lines)} result markers, expected 1"
-            )
+            raise SessionError(f"guest script emitted {len(lines)} result markers, expected 1")
         try:
             return json.loads(lines[0][len(self.marker) :])
         except json.JSONDecodeError as exc:
@@ -218,8 +214,9 @@ class DesktopSession:
         self.require_single_task = require_single_task
         self.forbid_gpu_visibility = forbid_gpu_visibility
         self.transport_timeout_s = float(transport_timeout_s)
-        self.client: OSWorldClient | None = None
-        self.transport: HttpGuiTransport | None = None
+        self._client: DesktopClient | None = None
+        self._base_url: str | None = None
+        self._ports: GuestPorts | None = None
         self.scratch_dir: Path | None = None
         self.scratch_source: str | None = None
         self.metadata_path = metadata_path
@@ -297,16 +294,15 @@ class DesktopSession:
         # the only reliable placement boundary for it.
         self._set_environment("TMPDIR", str(self.scratch_dir))
 
-    def start(self) -> HttpGuiTransport:
+    def start(self) -> Self:
         if self._started:
-            return self._require_transport()
+            return self
         try:
             self._prepare_isolation()
             state = self.runtime.start()
-            self.client = OSWorldClient(state.base_url, timeout_s=self.transport_timeout_s)
-            self.transport = HttpGuiTransport(
-                state.base_url, timeout_s=self.transport_timeout_s
-            )
+            self._base_url = state.base_url
+            self._ports = state.ports
+            self._replace_client()
             self.runtime.ensure_base()
             self._started = True
             self._write_metadata(
@@ -317,63 +313,126 @@ class DesktopSession:
         except Exception:
             self.close()
             raise
-        return self._require_transport()
+        return self
 
-    def _require_transport(self) -> HttpGuiTransport:
-        if self.transport is None:
+    def _require_client(self) -> DesktopClient:
+        if self._client is None:
             raise SessionError("session is not started")
-        return self.transport
+        return self._client
+
+    def _replace_client(self) -> None:
+        if self._base_url is None:
+            raise SessionError("session is not started")
+        client = DesktopClient(self._base_url, timeout_s=self.transport_timeout_s)
+        client.verify_actions_contract()
+        self._client = client
+
+    @property
+    def base_url(self) -> str:
+        if self._base_url is None:
+            raise SessionError("session is not started")
+        return self._base_url
+
+    @property
+    def ports(self) -> GuestPorts:
+        if self._ports is None:
+            raise SessionError("session is not started")
+        return self._ports
+
+    def execute(self, operations: tuple[Operation, ...]) -> ExecutionReceipt:
+        return self._require_client().execute(operations)
+
+    def cursor_position(self) -> tuple[int, int]:
+        return self._require_client().cursor_position()
+
+    def screen_size(self) -> tuple[int, int]:
+        return self._require_client().screen_size()
+
+    def screenshot(self) -> bytes:
+        return self._require_client().screenshot()
+
+    def screenshot_settled(
+        self,
+        *,
+        min_delay_s: float = 0.0,
+        stability_timeout_s: float = 0.0,
+        poll_s: float = 0.1,
+    ) -> bytes:
+        return self._require_client().screenshot_settled(
+            min_delay_s=min_delay_s,
+            stability_timeout_s=stability_timeout_s,
+            poll_s=poll_s,
+        )
+
+    def run_guest(
+        self, argv: list[str], *, timeout_s: float | None = None
+    ) -> GuestCommandResult:
+        return self._require_client().run_guest(argv, timeout_s=timeout_s)
+
+    def run_guest_with_secret(
+        self,
+        argv: Sequence[str],
+        *,
+        secret: bytes,
+        timeout_s: float | None = None,
+    ) -> None:
+        self._require_client().run_guest_with_secret(argv, secret=secret, timeout_s=timeout_s)
+
+    def spawn_guest(
+        self,
+        argv: Sequence[str],
+        *,
+        timeout_s: float,
+        env: Mapping[str, str] | None = None,
+    ) -> GuestCommandResult:
+        return self._require_client().spawn_guest(argv, timeout_s=timeout_s, env=env)
+
+    def write_guest_file(self, path: str, content: bytes) -> None:
+        self._require_client().write_guest_file(path, content)
 
     def guest(self) -> GuestScript:
-        if self.client is None:
-            raise SessionError("session is not started")
-        return GuestScript(self.client)
+        return GuestScript(self._require_client())
 
-    def reset(
-        self, *, mode: DesktopResetMode = DesktopResetMode.SNAPSHOT
-    ) -> HttpGuiTransport:
+    def reset(self, *, mode: DesktopResetMode = DesktopResetMode.SNAPSHOT) -> Self:
         """Prepare the guest for the next episode, per ``mode``.
 
         ``SNAPSHOT`` resets to the clean checkpoint and consumes the receipt for
         you.  ``LOGICAL`` does not touch the runtime at all, so there is no
         rewind, no receipt, and no reset sequence to advance -- what it still
-        guarantees is the fresh transport.
+        guarantees is a fresh client and input audit.
         """
         if mode is DesktopResetMode.LOGICAL:
             return self._logical_reset()
-        transport, receipt = self.reset_with_receipt()
+        _, receipt = self.reset_with_receipt()
         self.consume_receipt(receipt)
-        return transport
+        return self
 
-    def _logical_reset(self) -> HttpGuiTransport:
-        """Hand back a fresh transport over the still-running guest.
+    def _logical_reset(self) -> Self:
+        """Hand back a fresh client over the still-running guest.
 
         A button believed held before the boundary must not be believed held
-        after it, and a fresh transport is a fresh audit.  That is the whole of
+        after it, and a fresh client is a fresh audit. That is the whole of
         a logical reset: the runtime is deliberately not touched.
         """
-        if not self._started or self.client is None:
+        if not self._started or self._client is None:
             raise SessionError("session is not started")
         if self._outstanding_receipt_sha256 is not None:
             raise SessionError(
                 "the previous reset receipt must be consumed before another reset"
             )
-        base_url = self.transport.base_url if self.transport else ""
-        self.transport = HttpGuiTransport(base_url, timeout_s=self.transport_timeout_s)
-        return self._require_transport()
+        self._replace_client()
+        return self
 
-    def reset_with_receipt(self) -> tuple[HttpGuiTransport, ResetReceipt]:
+    def reset_with_receipt(self) -> tuple[Self, ResetReceipt]:
         """Reset, and hand back proof that the guest actually rewound."""
-        if not self._started or self.client is None:
+        if not self._started or self._client is None:
             raise SessionError("session is not started")
         if self._outstanding_receipt_sha256 is not None:
             raise SessionError(
                 "the previous reset receipt must be consumed before another reset"
             )
         sequence = self._reset_sequence + 1
-        sentinel_path = (
-            f"/tmp/desktop_env_reset_attestation_{self.session_id}_{sequence}.nonce"
-        )
+        sentinel_path = f"/tmp/desktop_env_reset_attestation_{self.session_id}_{sequence}.nonce"
         nonce = secrets.token_hex(32)
         started = time.monotonic_ns()
         self._plant_sentinel(sentinel_path, nonce)
@@ -387,11 +446,7 @@ class DesktopSession:
         self._verify_sentinel_removed(sentinel_path)
         completed = time.monotonic_ns()
         self._reset_sequence = sequence
-        # Held input state must never cross an episode boundary: a fresh transport
-        # means a fresh audit, so a button believed held before the reset cannot
-        # be believed held after it.
-        base_url = self.transport.base_url if self.transport else ""
-        self.transport = HttpGuiTransport(base_url, timeout_s=self.transport_timeout_s)
+        self._replace_client()
         payload = {
             "session_id": self.session_id,
             "reset_id": uuid.uuid4().hex,
@@ -404,9 +459,7 @@ class DesktopSession:
             "guest_sentinel_path_sha256": hashlib.sha256(
                 sentinel_path.encode("utf-8")
             ).hexdigest(),
-            "guest_sentinel_nonce_sha256": hashlib.sha256(
-                nonce.encode("utf-8")
-            ).hexdigest(),
+            "guest_sentinel_nonce_sha256": hashlib.sha256(nonce.encode("utf-8")).hexdigest(),
             "runtime_state_before_sha256": prior_generation,
             "runtime_state_after_sha256": new_generation,
         }
@@ -418,9 +471,9 @@ class DesktopSession:
         ).hexdigest()
         receipt = ResetReceipt(**payload, attestor_mac=mac, receipt_sha256=receipt_sha256)
         self._outstanding_receipt_sha256 = receipt.receipt_sha256
-        return self._require_transport(), receipt
+        return self, receipt
 
-    def reset_to_checkpoint(self, name: str, *, setup: Any = None) -> HttpGuiTransport:
+    def reset_to_checkpoint(self, name: str, *, setup: Any = None) -> Self:
         """Restore ``name``, creating it from ``setup`` the first time.
 
         On the first call for a tag, the (expensive) per-task setup runs once and
@@ -431,16 +484,13 @@ class DesktopSession:
             raise SessionError("session is not started")
         if self.runtime.has_checkpoint(name):
             self.runtime.restore(name)
-            base_url = self.transport.base_url if self.transport else ""
-            self.transport = HttpGuiTransport(
-                base_url, timeout_s=self.transport_timeout_s
-            )
-            return self._require_transport()
-        transport = self.reset()
+            self._replace_client()
+            return self
+        self.reset()
         if setup is not None:
-            setup(transport)
+            setup(self)
         self.runtime.checkpoint(name)
-        return transport
+        return self
 
     def _runtime_observation(self) -> bytes:
         """A stable hash input describing the runtime's externally visible state.
@@ -455,12 +505,12 @@ class DesktopSession:
         ready = self.runtime.is_ready()
         cursor: list[int] | None = None
         with contextlib.suppress(Exception):
-            if self.client is not None:
-                cursor = list(self.client.cursor_position())
+            if self._client is not None:
+                cursor = list(self._client.cursor_position())
         screenshot_sha256: str | None = None
         with contextlib.suppress(Exception):
-            if self.client is not None:
-                screenshot_sha256 = hashlib.sha256(self.client.screenshot()).hexdigest()
+            if self._client is not None:
+                screenshot_sha256 = hashlib.sha256(self._client.screenshot()).hexdigest()
         return canonical_json(
             {
                 "checkpoints": checkpoints,
@@ -472,7 +522,7 @@ class DesktopSession:
         )
 
     def _plant_sentinel(self, path: str, nonce: str) -> None:
-        if self.client is None:
+        if self._client is None:
             raise SessionError("session is not started")
         program = (
             "from pathlib import Path;"
@@ -481,20 +531,22 @@ class DesktopSession:
             "assert p.read_text(encoding='utf-8')==v"
         )
         try:
-            self.client.execute(["python3", "-c", program])
+            result = self._client.run_guest(["python3", "-c", program])
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr)
         except Exception as exc:
             raise SessionError(f"could not plant the pre-reset guest sentinel: {exc}") from exc
 
     def _verify_sentinel_removed(self, path: str) -> None:
-        if self.client is None:
+        if self._client is None:
             raise SessionError("session is not started")
         program = f"from pathlib import Path;assert not Path({path!r}).exists()"
         try:
-            self.client.execute(["python3", "-c", program])
+            result = self._client.run_guest(["python3", "-c", program])
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr)
         except Exception as exc:
-            raise SessionError(
-                "the reset did not rewind the pre-reset guest sentinel"
-            ) from exc
+            raise SessionError("the reset did not rewind the pre-reset guest sentinel") from exc
 
     def consume_receipt(self, receipt: ResetReceipt) -> None:
         """Verify a receipt's MAC, ordering, and single use."""
@@ -588,8 +640,9 @@ class DesktopSession:
         except Exception as exc:
             stopped = False
             errors.append(f"runtime stop failed: {exc}")
-        self.transport = None
-        self.client = None
+        self._client = None
+        self._base_url = None
+        self._ports = None
         scratch = self.scratch_dir
         if scratch is not None:
             try:

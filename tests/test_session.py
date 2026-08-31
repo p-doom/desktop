@@ -21,6 +21,9 @@ import os
 
 import pytest
 
+import desktop.vm.session as session_module
+from desktop.execute.protocol import InputAudit
+from desktop.vm.client import GuestCommandResult
 from desktop.vm.runtime import Checkpoint, GuestPorts, RuntimeState
 from desktop.vm.session import (
     DesktopResetMode,
@@ -47,6 +50,8 @@ class FakeRuntime:
         self.generation = 0
         self.started = False
         self.stopped = 0
+        self.programs: list[str] = []
+        self.sentinel_survives_reset = False
 
     def start(self) -> RuntimeState:
         self.started = True
@@ -93,17 +98,32 @@ class FakeRuntime:
 class FakeClient:
     """A guest client whose sentinel really disappears when the runtime rewinds."""
 
-    def __init__(self, runtime: FakeRuntime) -> None:
+    def __init__(self, runtime: FakeRuntime, base_url: str) -> None:
         self.runtime = runtime
-        self.programs: list[str] = []
-        self.sentinel_survives_reset = False
+        self.base_url = base_url
+        self.audit = InputAudit()
 
-    def execute(self, argv, *, check=True, timeout_s=None):
+    @property
+    def programs(self) -> list[str]:
+        return self.runtime.programs
+
+    @property
+    def sentinel_survives_reset(self) -> bool:
+        return self.runtime.sentinel_survives_reset
+
+    @sentinel_survives_reset.setter
+    def sentinel_survives_reset(self, value: bool) -> None:
+        self.runtime.sentinel_survives_reset = value
+
+    def verify_actions_contract(self) -> None:
+        pass
+
+    def run_guest(self, argv, *, timeout_s=None):
         program = argv[-1]
         self.programs.append(program)
         if "assert not Path(" in program and self.sentinel_survives_reset:
             raise RuntimeError("sentinel is still present after the reset")
-        return {"status": "success", "returncode": 0, "output": ""}
+        return GuestCommandResult(returncode=0, stdout="", stderr="")
 
     def cursor_position(self):
         return (self.runtime.generation, self.runtime.generation)
@@ -113,8 +133,13 @@ class FakeClient:
 
 
 @pytest.fixture
-def session(tmp_path):
+def session(tmp_path, monkeypatch):
     runtime = FakeRuntime()
+    monkeypatch.setattr(
+        session_module,
+        "DesktopClient",
+        lambda base_url, *, timeout_s: FakeClient(runtime, base_url),
+    )
     session = DesktopSession(
         runtime,
         scratch_root=tmp_path,
@@ -123,18 +148,17 @@ def session(tmp_path):
         require_single_task=False,
     )
     session.start()
-    session.client = FakeClient(runtime)  # type: ignore[assignment]
     yield session
     if session._started:
         session.close()
 
 
 def test_a_snapshot_reset_rewinds_the_runtime_and_settles_its_receipt(session):
-    transport = session.reset(mode=DesktopResetMode.SNAPSHOT)
+    returned = session.reset(mode=DesktopResetMode.SNAPSHOT)
     assert session.runtime.restores == ["base"]
     assert session._reset_sequence == 1
     assert session._outstanding_receipt_sha256 is None
-    assert transport is session.transport
+    assert returned is session
 
 
 def test_the_default_reset_mode_is_the_one_that_rewinds(session):
@@ -148,15 +172,16 @@ def test_a_logical_reset_leaves_the_guest_running(session):
     """For a task whose expensive setup -- a warm browser -- must survive the
     boundary.  Nothing rewinds, so there is nothing to attest and no sequence to
     advance, and the sentinel is never planted."""
-    before = session.transport
-    transport = session.reset(mode=DesktopResetMode.LOGICAL)
+    before = session._client
+    returned = session.reset(mode=DesktopResetMode.LOGICAL)
     assert session.runtime.restores == []
     assert session._reset_sequence == 0
     assert session._outstanding_receipt_sha256 is None
-    assert session.client.programs == []
-    assert transport is session.transport
-    assert transport is not before, "held input state must not cross the boundary"
-    assert transport.base_url == before.base_url
+    assert session._client is not None
+    assert session._client.programs == []
+    assert returned is session
+    assert session._client is not before, "held input state must not cross the boundary"
+    assert session._client.base_url == before.base_url
 
 
 def test_a_logical_reset_is_refused_while_a_receipt_is_outstanding(session):
@@ -181,14 +206,14 @@ def test_a_reset_mode_is_its_wire_value(session):
 
 
 def test_a_reset_produces_a_receipt_describing_it(session):
-    transport, receipt = session.reset_with_receipt()
+    returned, receipt = session.reset_with_receipt()
     assert isinstance(receipt, ResetReceipt)
     assert receipt.session_id == "sess-1"
     assert receipt.reset_sequence == 1
     assert receipt.checkpoint_name == "base"
     assert session.runtime.restores == ["base"]
     assert receipt.reset_completed_monotonic_ns >= receipt.reset_started_monotonic_ns
-    assert transport is session.transport
+    assert returned is session
 
 
 def test_the_generation_must_advance_across_the_reset(session):
@@ -208,26 +233,25 @@ def test_a_reset_that_changes_nothing_is_refused(session):
 
 def test_a_sentinel_that_survives_the_reset_is_refused(session):
     """Direct evidence about the GUEST, not just about the runtime object."""
-    session.client.sentinel_survives_reset = True
+    session._require_client().sentinel_survives_reset = True
     with pytest.raises(SessionError, match="did not rewind the pre-reset guest sentinel"):
         session.reset_with_receipt()
 
 
 def test_the_sentinel_is_planted_before_the_restore_and_checked_after(session):
     session.reset_with_receipt()
-    plants = [p for p in session.client.programs if "write_text" in p]
-    checks = [p for p in session.client.programs if "assert not Path(" in p]
+    programs = session._require_client().programs
+    plants = [p for p in programs if "write_text" in p]
+    checks = [p for p in programs if "assert not Path(" in p]
     assert len(plants) == 1 and len(checks) == 1
-    assert session.client.programs.index(plants[0]) < session.client.programs.index(
-        checks[0]
-    )
+    assert programs.index(plants[0]) < programs.index(checks[0])
 
 
 def test_the_receipt_commits_to_the_sentinel_without_revealing_it(session):
     _, receipt = session.reset_with_receipt()
     assert len(receipt.guest_sentinel_path_sha256) == 64
     assert len(receipt.guest_sentinel_nonce_sha256) == 64
-    planted = next(p for p in session.client.programs if "write_text" in p)
+    planted = next(p for p in session._require_client().programs if "write_text" in p)
     # The nonce itself is in the guest program but only its digest is in the
     # receipt, so a receipt can be published without leaking the nonce.
     assert receipt.guest_sentinel_nonce_sha256 not in planted
@@ -425,8 +449,8 @@ def test_the_observation_tolerates_a_guest_that_will_not_answer(session):
     def explode(*args, **kwargs):
         raise ConnectionError("guest is wedged")
 
-    session.client.cursor_position = explode
-    session.client.screenshot = explode
+    session._require_client().cursor_position = explode
+    session._require_client().screenshot = explode
     payload = json.loads(session._runtime_observation())
     assert payload["cursor"] is None
     assert payload["screenshot_sha256"] is None
@@ -442,12 +466,13 @@ def test_the_observation_does_not_introspect_provider_internals():
     assert "timings" not in source
 
 
-def test_a_reset_hands_back_a_fresh_transport_with_an_empty_audit(session):
-    before = session.transport
+def test_a_reset_replaces_the_client_and_clears_its_input_audit(session):
+    before = session._require_client()
     before.audit.held_buttons.add("left")
     before.audit.held_keys.add("ctrl")
     before.audit.scroll_total = 7
-    after = session.reset()
+    assert session.reset() is session
+    after = session._require_client()
     assert after is not before
     assert after.base_url == before.base_url
     assert after.audit.held_buttons == set()
@@ -456,11 +481,11 @@ def test_a_reset_hands_back_a_fresh_transport_with_an_empty_audit(session):
     assert after.audit.operations == []
 
 
-def test_reset_to_checkpoint_also_refreshes_the_transport(session):
-    before = session.transport
+def test_reset_to_checkpoint_also_refreshes_the_client(session):
+    before = session._require_client()
     session.runtime.checkpoint("post-setup")
-    after = session.reset_to_checkpoint("post-setup")
-    assert after is not before
+    assert session.reset_to_checkpoint("post-setup") is session
+    assert session._require_client() is not before
     assert session.runtime.restores == ["post-setup"]
 
 
@@ -499,9 +524,15 @@ def test_close_removes_the_scratch_directory_and_the_task_lock(session, tmp_path
 
 
 def test_close_restores_the_environment_it_changed(tmp_path, monkeypatch):
+    runtime = FakeRuntime()
+    monkeypatch.setattr(
+        session_module,
+        "DesktopClient",
+        lambda base_url, *, timeout_s: FakeClient(runtime, base_url),
+    )
     monkeypatch.setenv("TMPDIR", "/original/tmpdir")
     session = DesktopSession(
-        FakeRuntime(), scratch_root=tmp_path, session_id="env", require_single_task=False
+        runtime, scratch_root=tmp_path, session_id="env", require_single_task=False
     )
     session.start()
     assert os.environ["TMPDIR"] == str(session.scratch_dir)
@@ -509,13 +540,19 @@ def test_close_restores_the_environment_it_changed(tmp_path, monkeypatch):
     assert os.environ["TMPDIR"] == "/original/tmpdir"
 
 
-def test_a_failed_start_closes_what_it_opened(tmp_path):
+def test_a_failed_start_closes_what_it_opened(tmp_path, monkeypatch):
     class BrokenRuntime(FakeRuntime):
         def ensure_base(self):
             raise RuntimeError("no base checkpoint")
 
+    runtime = BrokenRuntime()
+    monkeypatch.setattr(
+        session_module,
+        "DesktopClient",
+        lambda base_url, *, timeout_s: FakeClient(runtime, base_url),
+    )
     session = DesktopSession(
-        BrokenRuntime(), scratch_root=tmp_path, session_id="broken", require_single_task=False
+        runtime, scratch_root=tmp_path, session_id="broken", require_single_task=False
     )
     with pytest.raises(RuntimeError, match="no base checkpoint"):
         session.start()
@@ -542,12 +579,17 @@ def test_gpu_visibility_can_be_forbidden(tmp_path, monkeypatch):
         session.start()
 
 
-def test_the_session_is_a_context_manager(tmp_path):
+def test_the_session_is_a_context_manager(tmp_path, monkeypatch):
     runtime = FakeRuntime()
+    monkeypatch.setattr(
+        session_module,
+        "DesktopClient",
+        lambda base_url, *, timeout_s: FakeClient(runtime, base_url),
+    )
     with DesktopSession(
         runtime, scratch_root=tmp_path, session_id="ctx", require_single_task=False
     ) as session:
-        assert session.transport is not None
+        assert session.base_url == "http://127.0.0.1:1"
     assert runtime.stopped >= 1
 
 
@@ -590,25 +632,21 @@ def test_a_guest_script_reads_only_its_marker_line():
     script = GuestScript(client=None)  # type: ignore[arg-type]
     noisy = (
         "Gtk-WARNING **: cannot open display\n"
-        "DESKTOP_ENV_JSON={\"value\": 42}\n"
+        'DESKTOP_ENV_JSON={"value": 42}\n'
         "some trailing chatter\n"
     )
-    assert script.parse({"output": noisy}) == {"value": 42}
+    assert script.parse(GuestCommandResult(0, noisy, "")) == {"value": 42}
 
 
 def test_a_guest_script_refuses_ambiguous_or_absent_markers():
     script = GuestScript(client=None)  # type: ignore[arg-type]
     with pytest.raises(SessionError, match="0 result markers"):
-        script.parse({"output": "nothing here"})
+        script.parse(GuestCommandResult(0, "nothing here", ""))
     with pytest.raises(SessionError, match="2 result markers"):
-        script.parse({"output": "DESKTOP_ENV_JSON={}\nDESKTOP_ENV_JSON={}"})
-    with pytest.raises(SessionError, match="no stdout"):
-        script.parse({"output": None})
+        script.parse(GuestCommandResult(0, "DESKTOP_ENV_JSON={}\nDESKTOP_ENV_JSON={}", ""))
 
 
 def test_a_guest_script_reports_invalid_json_as_such():
     script = GuestScript(client=None)  # type: ignore[arg-type]
     with pytest.raises(SessionError, match="invalid JSON"):
-        script.parse({"output": "DESKTOP_ENV_JSON={not json}"})
-
-
+        script.parse(GuestCommandResult(0, "DESKTOP_ENV_JSON={not json}", ""))

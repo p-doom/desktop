@@ -3,20 +3,17 @@ from __future__ import annotations
 import pytest
 
 from desktop import ir
-from desktop.execute.guest_program import (
-    ATOMIC_SCHEMA_VERSION,
+from desktop.execute.protocol import (
     BUTTON_MASKS,
     BUTTON_NUMBERS,
+    RESULT_SCHEMA_VERSION,
 )
 
 from .support.guest_runner import run_guest_program
 
 
 def _event_shape(payload: dict) -> list[tuple[str, int]]:
-    return [
-        (event["event"], event["detail"])
-        for event in payload["x_injection_evidence"]
-    ]
+    return [(event["event"], event["detail"]) for event in payload["x_injection_evidence"]]
 
 
 def test_typed_newline_and_tab_match_explicit_key_events() -> None:
@@ -35,8 +32,8 @@ def test_typed_newline_and_tab_match_explicit_key_events() -> None:
 
     assert typed.returncode == expanded.returncode == 0
     assert _event_shape(typed.payload) == _event_shape(expanded.payload)
-    assert typed.payload["semantic_operations"] == [ir.coalesced_type(text).as_dict()]
-    assert expanded.payload["semantic_operations"] == [
+    assert typed.request["operations"] == [ir.coalesced_type(text).as_dict()]
+    assert expanded.request["operations"] == [
         operation.as_dict() for operation in expanded_operations
     ]
 
@@ -53,9 +50,7 @@ def test_click_and_explicit_transitions_keep_their_own_button(button: str) -> No
 
     assert _event_shape(click.payload) == expected_events
     assert _event_shape(transitions.payload) == expected_events
-    assert transitions.payload["semantic_operations"] == [
-        operation.as_dict() for operation in pair
-    ]
+    assert transitions.request["operations"] == [operation.as_dict() for operation in pair]
     assert transitions.payload["lowered_operations"] == [ir.click(button).as_dict()]
 
     pressed = run_guest_program((ir.mouse_down(button),))
@@ -77,16 +72,13 @@ def test_failure_cleanup_preserves_the_atomic_receipt_and_releases_holds() -> No
     run = run_guest_program(operations)
 
     assert run.returncode == 1
-    assert run.marker_count == 1
-    assert run.payload["_de_schema"] == ATOMIC_SCHEMA_VERSION
-    assert run.payload["guest_process_count"] == 1
+    assert run.payload["schema_version"] == RESULT_SCHEMA_VERSION
+    assert run.payload["executor_process_count"] == 1
     assert run.payload["cleanup_attempted"] is True
     assert run.payload["failure_kind"] == "injected"
     assert run.payload["pointer_button_mask"] == 0
     assert run.payload["held_keys"] == []
-    assert run.payload["semantic_operations"] == [
-        operation.as_dict() for operation in operations
-    ]
+    assert run.request["operations"] == [operation.as_dict() for operation in operations]
     phases = [event["phase"] for event in run.payload["x_injection_evidence"]]
     assert "cleanup_key" in phases
     assert "cleanup_button" in phases

@@ -1,0 +1,51 @@
+--- a/main.py
++++ b/main.py
+@@ -1,6 +1,7 @@
+ import base64
+ import binascii
+ import ctypes
++import hashlib
+ import io
+ import os
+ import platform
+@@ -78,1 +79,40 @@
+ SECRET_STDIN_EXECUTE_CONTRACT = "desktop_execute_secret_stdin_v1"
++ACTION_EXECUTOR_PATH = "/usr/local/lib/desktop/guest_executor.py"
++ACTION_EXECUTOR_CONTRACT = "desktop_actions_v1"
++with open(ACTION_EXECUTOR_PATH, "rb") as action_executor_file:
++    ACTION_EXECUTOR_SHA256 = hashlib.sha256(action_executor_file.read()).hexdigest()
++@app.route('/v1/actions', methods=['GET', 'POST'])
++def execute_action():
++    if request.method == 'GET':
++        return jsonify({
++            'contract': ACTION_EXECUTOR_CONTRACT,
++            'executor_sha256': ACTION_EXECUTOR_SHA256,
++        })
++    payload = request.get_json(silent=True)
++    if not isinstance(payload, dict):
++        return jsonify({'status': 'error'}), 400
++    try:
++        result = subprocess.run(
++            ['/usr/bin/python3', ACTION_EXECUTOR_PATH],
++            input=json.dumps(payload),
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            shell=False,
++            text=True,
++            timeout=120,
++        )
++    except Exception:
++        return jsonify({'status': 'error'}), 500
++    try:
++        response = json.loads(result.stdout)
++    except (TypeError, json.JSONDecodeError):
++        return jsonify({'status': 'error'}), 500
++    if (
++        not isinstance(response, dict)
++        or type(response.get('ok')) is not bool
++        or (result.returncode == 0) != response['ok']
++        or 'executor_returncode' in response
++    ):
++        return jsonify({'status': 'error'}), 500
++    response['executor_returncode'] = result.returncode
++    return jsonify(response)

@@ -708,7 +708,24 @@ class DummyRuntime:
         return ()
 
 
-def test_two_sessions_sharing_a_scratch_root_collide_on_the_task_lock(tmp_path):
+@pytest.fixture
+def compatible_guest(monkeypatch):
+    """A no-I/O client for tests concerned only with host session isolation."""
+    import desktop.vm.session as session_module
+
+    class Client:
+        def __init__(self, base_url, *, timeout_s):
+            self.base_url = base_url
+
+        def verify_actions_contract(self):
+            pass
+
+    monkeypatch.setattr(session_module, "DesktopClient", Client)
+
+
+def test_two_sessions_sharing_a_scratch_root_collide_on_the_task_lock(
+    tmp_path, compatible_guest
+):
     """DOCUMENTS A DEFECT in the factory's stated reasoning.
 
     ``require_single_task`` does NOT gate the one-VM-per-task ``flock``: the lock
@@ -733,7 +750,7 @@ def test_two_sessions_sharing_a_scratch_root_collide_on_the_task_lock(tmp_path):
 
 
 def test_what_actually_separates_two_pooled_sessions_is_the_per_lease_scratch_root(
-    tmp_path,
+    tmp_path, compatible_guest
 ):
     """The real mechanism, which the factory docstring attributes to the flag.
 
@@ -766,7 +783,9 @@ def test_what_actually_separates_two_pooled_sessions_is_the_per_lease_scratch_ro
             first.close()
 
 
-def test_the_flag_only_gates_the_scheduler_task_count_check(tmp_path, monkeypatch):
+def test_the_flag_only_gates_the_scheduler_task_count_check(
+    tmp_path, monkeypatch, compatible_guest
+):
     """What ``require_single_task`` actually controls, pinned."""
     from desktop.vm.session import DesktopSession, SessionError
 
@@ -920,7 +939,7 @@ def test_a_lease_whose_scratch_is_not_empty_is_left_alone(port_base, tmp_path):
 
 
 def test_a_pooled_session_leaves_its_scratch_empty_for_the_lease_to_remove(
-    port_base, tmp_path, image, monkeypatch
+    port_base, tmp_path, image, monkeypatch, compatible_guest
 ):
     """The two halves of the contract have to hold at the same time.
 

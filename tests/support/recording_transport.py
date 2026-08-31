@@ -1,25 +1,24 @@
-"""Deterministic in-process double for the XTEST transport."""
+"""Deterministic in-process double for the public desktop action surface."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from desktop.ir import Operation, glide_seconds, scroll_deltas
-from desktop.execute.guest_program import (
-    ATOMIC_RESULT_PREFIX,
-    AtomicExecutionResult,
+from desktop.execute.keymap import guest_button, guest_key, key_chord
+from desktop.execute.protocol import (
     ExecutionError,
+    ExecutionReceipt,
     HeldStateError,
     InputAudit,
-    compile_atomic_guest_program,
+    build_action_request,
     expected_atomic_input_state,
     lower_guest_operations,
     pointer_mask_for_buttons,
 )
-from desktop.execute.keymap import guest_button, guest_key, key_chord
+from desktop.ir import Operation, glide_seconds, scroll_deltas
 
 
-class RecordingTransport:
+class RecordingClient:
     def __init__(
         self,
         *,
@@ -70,10 +69,10 @@ class RecordingTransport:
         self.audit.operations.append(Operation("scroll", (int(dx), 0)))
 
     def key_chord(self, keys: list[str]) -> None:
-        self.execute_atomic(key_chord(keys))
+        self.execute(key_chord(keys))
 
     def coalesced_type(self, text: str) -> None:
-        self.execute_atomic((Operation("coalesced_type", (text,)),))
+        self.execute((Operation("coalesced_type", (text,)),))
 
     def wait(self, seconds: float) -> None:
         self.audit.operations.append(Operation("wait", (max(0.0, min(10.0, float(seconds))),)))
@@ -84,8 +83,8 @@ class RecordingTransport:
             max(0, min(self._screen[1] - 1, int(y))),
         )
 
-    def execute_atomic(self, operations: tuple[Operation, ...]) -> AtomicExecutionResult:
-        compile_atomic_guest_program(
+    def execute(self, operations: tuple[Operation, ...]) -> ExecutionReceipt:
+        build_action_request(
             operations,
             initial_buttons=set(self.audit.held_buttons),
             initial_keys=set(self.audit.held_keys),
@@ -190,25 +189,24 @@ class RecordingTransport:
             self.audit.held_keys.clear()
             self.audit.held_buttons.clear()
         final_mask = pointer_mask_for_buttons(self.audit.held_buttons)
-        return AtomicExecutionResult(
+        return ExecutionReceipt(
             ok=error is None,
-            cursor=self._cursor,
+            requested_operations=operations,
+            operations=tuple(self.audit.operations[before:]),
+            lowered_operations=lowered,
             cursor_before=cursor_before,
             cursor_after=self._cursor,
+            host_cursor_before=cursor_before,
+            host_cursor_after=self._cursor,
+            cursor_readback_verified=True,
             pointer_button_mask=final_mask,
             observed_pointer_button_mask=observed_mask,
             expected_pointer_button_mask=expected_mask,
-            guest_process_count=1,
-            guest_returncode=0 if error is None else 1,
-            raw_result_marker=(
-                f"{ATOMIC_RESULT_PREFIX}<recording:{'ok' if error is None else 'failed'}>"
-            ),
+            held_keys=tuple(sorted(self.audit.held_keys)),
+            executor_process_count=1,
+            executor_returncode=0 if error is None else 1,
             cleanup_attempted=cleanup_attempted,
             error=error,
             failure_kind=failure_kind,
-            operations=tuple(self.audit.operations[before:]),
-            semantic_operations=operations,
-            lowered_operations=lowered,
-            held_keys=tuple(sorted(self.audit.held_keys)),
             backend_primitives=tuple(primitives),
         )

@@ -1,26 +1,15 @@
-"""A grammar-free client for the in-VM agent's HTTP surface.
+"""Client for the versioned desktop-agent HTTP contract.
 
-The in-VM agent exposes a small Flask app.  Of it, exactly four endpoints matter:
-
-    GET  /screenshot      -> raw cursor-composited JPEG bytes (1920x1080 RGB)
-    POST /screen_size     -> {"width": int, "height": int}
-    POST /execute         -> {"command": [...], "shell": false}; the server runs a
-                             subprocess and does NOT eval strings
-    GET  /accessibility   -> the platform accessibility tree (AT-SPI XML)
-
-There is no dispatch here and no key tables: dispatch belongs to a codec and an
-executor, and the key tables live in ``desktop.execute.keymap``.  This is a
-transport.
-
-Screenshots are validated with Pillow, then handed back unchanged as JPEG bytes.
-
-HTTP is ``urllib.request``: no ``requests``, no session object, no dependency.
+Actions cross ``/v1/actions`` as JSON and are executed by the module installed in
+the guest image. Observations and explicit guest-control commands share this one
+client so a session has one endpoint owner and one compatibility handshake.
 """
 
 from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import logging
@@ -30,13 +19,25 @@ import urllib.request
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from PIL import Image
 
+from ..execute.protocol import (
+    ACTION_CONTRACT,
+    BUTTON_MASKS,
+    RESULT_SCHEMA_VERSION,
+    ExecutionError,
+    ExecutionReceipt,
+    InputAudit,
+    build_action_request,
+    lower_guest_operations,
+)
+from ..ir import Operation, scroll_deltas
 from .observation import OBSERVATION_CONTRACT, OBSERVATION_SIZE
 
-_LOG = logging.getLogger("desktop.vm.osworld_client")
+_LOG = logging.getLogger(__name__)
 
 #: Linux caps ONE argv element at ``MAX_ARG_STRLEN`` (32 pages) at ``execve``, and
 #: a file pushed through ``/execute`` rides base64-encoded inside the single
@@ -102,12 +103,17 @@ class GuestCommandResult:
     stderr: str
 
 
-class OSWorldClient:
-    """Thin synchronous client over the in-VM agent."""
+ACTION_EXECUTOR_PATH = Path(__file__).with_name("guest") / "executor.py"
+ACTION_EXECUTOR_SHA256 = hashlib.sha256(ACTION_EXECUTOR_PATH.read_bytes()).hexdigest()
+
+
+class DesktopClient:
+    """Synchronous client for actions, observations, and trusted guest control."""
 
     def __init__(self, base_url: str, *, timeout_s: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = float(timeout_s)
+        self.audit = InputAudit()
 
     def _request(
         self,
@@ -149,9 +155,7 @@ class OSWorldClient:
     ) -> Any:
         status, body, _ = self._request(method, path, payload=payload, timeout_s=timeout_s)
         if status != 200:
-            raise GuestAgentError(
-                f"guest {method} {path} returned {status}: {body[:200]!r}"
-            )
+            raise GuestAgentError(f"guest {method} {path} returned {status}: {body[:200]!r}")
         try:
             return json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -168,9 +172,7 @@ class OSWorldClient:
         last_log = 0.0
         while time.time() - started < timeout_s:
             try:
-                status, body, content_type = self._request(
-                    "GET", "/screenshot", timeout_s=5.0
-                )
+                status, body, content_type = self._request("GET", "/screenshot", timeout_s=5.0)
                 if status == 200:
                     self._validate_screenshot(content_type, body)
                     _LOG.info("guest ready after %.1fs", time.time() - started)
@@ -182,9 +184,7 @@ class OSWorldClient:
                 _LOG.info("waiting for guest /screenshot... %.0fs", elapsed)
                 last_log = elapsed
             time.sleep(poll_s)
-        raise TimeoutError(
-            f"guest agent at {self.base_url} not ready after {timeout_s}s"
-        )
+        raise TimeoutError(f"guest agent at {self.base_url} not ready after {timeout_s}s")
 
     def screenshot(self) -> bytes:
         """Raw bytes in the one canonical desktop observation contract."""
@@ -213,8 +213,7 @@ class OSWorldClient:
                     )
                 if image.size != OBSERVATION_SIZE:
                     raise GuestAgentError(
-                        f"{OBSERVATION_CONTRACT} requires {OBSERVATION_SIZE}, "
-                        f"got {image.size}"
+                        f"{OBSERVATION_CONTRACT} requires {OBSERVATION_SIZE}, got {image.size}"
                     )
         except GuestAgentError:
             raise
@@ -227,32 +226,225 @@ class OSWorldClient:
             raise GuestAgentError(f"invalid screen size: {payload!r}")
         return int(payload["width"]), int(payload["height"])
 
-    def execute(
+    def verify_actions_contract(self) -> None:
+        capability = self._request_json("GET", "/v1/actions")
+        expected = {
+            "contract": ACTION_CONTRACT,
+            "executor_sha256": ACTION_EXECUTOR_SHA256,
+        }
+        if capability != expected:
+            raise GuestAgentError(
+                f"guest action contract mismatch: expected {expected!r}, got {capability!r}"
+            )
+
+    def execute(self, operations: tuple[Operation, ...]) -> ExecutionReceipt:
+        """Execute one validated operation tuple and verify cursor readback."""
+        request, expected_mask, expected_keys = build_action_request(
+            operations,
+            initial_buttons=set(self.audit.held_buttons),
+            initial_keys=set(self.audit.held_keys),
+        )
+        host_before = self.cursor_position()
+        payload = self._request_json("POST", "/v1/actions", payload=request)
+        parsed = self._parse_action_payload(payload, operations=operations)
+        if parsed["expected_pointer_button_mask"] != expected_mask:
+            raise ExecutionError("guest expected pointer mask drifted")
+        if parsed["ok"] and parsed["held_keys"] != tuple(sorted(expected_keys)):
+            raise ExecutionError("guest held key readback drifted")
+        self._absorb_action(parsed)
+        host_after = self.cursor_position()
+        verified = (
+            host_before == parsed["cursor_before"] and host_after == parsed["cursor_after"]
+        )
+        ok = parsed["ok"] and verified
+        error = parsed["error"]
+        failure_kind = parsed["failure_kind"]
+        if parsed["ok"] and not verified:
+            error = (
+                "cursor readback mismatch: "
+                f"host {host_before}->{host_after}, "
+                f"guest {parsed['cursor_before']}->{parsed['cursor_after']}"
+            )
+            failure_kind = "verification"
+        return ExecutionReceipt(
+            ok=ok,
+            requested_operations=operations,
+            operations=parsed["operations"],
+            lowered_operations=parsed["lowered_operations"],
+            cursor_before=parsed["cursor_before"],
+            cursor_after=parsed["cursor_after"],
+            host_cursor_before=host_before,
+            host_cursor_after=host_after,
+            cursor_readback_verified=verified,
+            pointer_button_mask=parsed["pointer_button_mask"],
+            observed_pointer_button_mask=parsed["observed_pointer_button_mask"],
+            expected_pointer_button_mask=parsed["expected_pointer_button_mask"],
+            held_keys=parsed["held_keys"],
+            executor_process_count=parsed["executor_process_count"],
+            executor_returncode=parsed["executor_returncode"],
+            cleanup_attempted=parsed["cleanup_attempted"],
+            error=error,
+            failure_kind=failure_kind,
+            backend_primitives=parsed["backend_primitives"],
+            x_injection_evidence=parsed["x_injection_evidence"],
+            keymap_restorations=parsed["keymap_restorations"],
+            final_pointer_readback=parsed["final_pointer_readback"],
+        )
+
+    def _parse_action_payload(
+        self, payload: Any, *, operations: tuple[Operation, ...]
+    ) -> dict[str, Any]:
+        def fail(message: str) -> None:
+            raise ExecutionError(message, evidence={"action_response": payload})
+
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != RESULT_SCHEMA_VERSION
+        ):
+            fail("guest action returned an unexpected schema")
+
+        def pair(name: str) -> tuple[int, int]:
+            value = payload.get(name)
+            if (
+                not isinstance(value, list)
+                or len(value) != 2
+                or any(type(item) is not int for item in value)
+            ):
+                fail(f"guest action returned an invalid {name}")
+            return int(value[0]), int(value[1])
+
+        def records(name: str) -> tuple[dict[str, Any], ...]:
+            value = payload.get(name)
+            if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+                fail(f"guest action returned an invalid {name}")
+            return tuple(dict(row) for row in value)
+
+        def integer(name: str) -> int:
+            value = payload.get(name)
+            if type(value) is not int:
+                fail(f"guest action returned an invalid {name}")
+            return int(value)
+
+        cursor = pair("cursor")
+        cursor_before = pair("cursor_before")
+        cursor_after = pair("cursor_after")
+        if cursor != cursor_after:
+            fail("guest action cursor alias/readback mismatch")
+        ok = payload.get("ok")
+        error = payload.get("error")
+        failure_kind = payload.get("failure_kind")
+        if type(ok) is not bool:
+            fail("guest action returned an invalid ok value")
+        if failure_kind not in {None, "verification", "infrastructure", "injected"}:
+            fail("guest action returned an invalid failure kind")
+        if ok != (failure_kind is None) or ok != (error is None):
+            fail("guest action failure classification is self-contradictory")
+        if error is not None and not isinstance(error, str):
+            fail("guest action returned an invalid error")
+        if integer("executor_process_count") != 1:
+            fail("action did not use exactly one guest executor process")
+        returncode = integer("executor_returncode")
+        if (returncode == 0) != ok:
+            fail("guest action return code contradicts its result")
+        held_keys = payload.get("held_keys")
+        if not isinstance(held_keys, list) or not all(
+            isinstance(key, str) for key in held_keys
+        ):
+            fail("guest action returned invalid held_keys")
+        traced = tuple(
+            Operation(str(row["kind"]), tuple(row.get("args", ())))
+            for row in records("operations")
+        )
+        lowered = tuple(
+            Operation(str(row["kind"]), tuple(row.get("args", ())))
+            for row in records("lowered_operations")
+        )
+        expected_lowered = lower_guest_operations(operations)
+        if lowered != expected_lowered:
+            fail("guest action lowered operations drifted")
+        keymap_restorations = records("keymap_restorations")
+        if ok and any(row.get("exact") is not True for row in keymap_restorations):
+            fail("guest action claimed success with a drifted keymap restoration")
+        final_readback = payload.get("final_pointer_readback")
+        if not isinstance(final_readback, dict):
+            fail("guest action returned invalid final_pointer_readback")
+        return {
+            "ok": ok,
+            "cursor_before": cursor_before,
+            "cursor_after": cursor_after,
+            "pointer_button_mask": integer("pointer_button_mask"),
+            "observed_pointer_button_mask": integer("observed_pointer_button_mask"),
+            "expected_pointer_button_mask": integer("expected_pointer_button_mask"),
+            "executor_process_count": 1,
+            "executor_returncode": returncode,
+            "cleanup_attempted": payload.get("cleanup_attempted") is True,
+            "error": error,
+            "failure_kind": failure_kind,
+            "operations": traced,
+            "lowered_operations": lowered,
+            "held_keys": tuple(held_keys),
+            "backend_primitives": records("backend_primitives"),
+            "x_injection_evidence": records("x_injection_evidence"),
+            "keymap_restorations": keymap_restorations,
+            "final_pointer_readback": dict(final_readback),
+        }
+
+    def _absorb_action(self, result: Mapping[str, Any]) -> None:
+        self.audit.operations.extend(result["operations"])
+        mask = result["pointer_button_mask"]
+        self.audit.held_buttons = (
+            {button for button, button_mask in BUTTON_MASKS.items() if mask & button_mask}
+            if mask >= 0
+            else set()
+        )
+        self.audit.held_keys = set(result["held_keys"])
+        for operation in result["operations"]:
+            if operation.kind == "scroll":
+                self.audit.scroll_total += scroll_deltas(operation.args)[1]
+            elif operation.kind in {"coalesced_type", "ascii_type"}:
+                self.audit.typed_texts.append(str(operation.args[0]))
+
+    def _execute_command(
         self, argv: list[str], *, check: bool = True, timeout_s: float | None = None
     ) -> dict[str, Any]:
-        """Run an argv in the guest.
-
-        ``shell: false`` always.  The agent runs a subprocess and does not eval,
-        so a caller that wants Python in the guest passes
-        ``["python", "-c", <program>]`` -- which is what
-        ``desktop.execute.guest_program`` compiles.
-        """
+        """Run an argv through the upstream guest-control endpoint."""
         result = self._request_json(
-            "POST", "/execute", payload={"command": list(argv), "shell": False},
+            "POST",
+            "/execute",
+            payload={"command": list(argv), "shell": False},
             timeout_s=timeout_s,
         )
         if not isinstance(result, dict):
             raise GuestAgentError("guest /execute returned a non-object")
-        if check and (
-            result.get("status") != "success" or result.get("returncode") != 0
-        ):
+        if check and (result.get("status") != "success" or result.get("returncode") != 0):
             raise GuestAgentError(
                 f"guest command failed: status={result.get('status')!r} "
                 f"rc={result.get('returncode')!r} stderr={result.get('error')!r}"
             )
         return result
 
-    def execute_with_secret_stdin(
+    def run_guest(
+        self, argv: list[str], *, timeout_s: float | None = None
+    ) -> GuestCommandResult:
+        """Run one argv and return its exit status and complete text streams."""
+        result = self._execute_command(argv, check=False, timeout_s=timeout_s)
+        status = result.get("status")
+        returncode = result.get("returncode")
+        if (
+            status not in {"success", "error"}
+            or type(returncode) is not int
+            or (status == "success") != (returncode == 0)
+            or not isinstance(result.get("output"), str)
+            or not isinstance(result.get("error"), str)
+        ):
+            raise GuestAgentError(f"guest command returned an invalid result: {result!r}")
+        return GuestCommandResult(
+            returncode=returncode,
+            stdout=result["output"],
+            stderr=result["error"],
+        )
+
+    def run_guest_with_secret(
         self,
         argv: Sequence[str],
         *,
@@ -261,9 +453,7 @@ class OSWorldClient:
     ) -> None:
         """Run one guest argv with secret bytes on stdin and no output channel."""
         command = list(argv)
-        if not command or not all(
-            isinstance(value, str) and value for value in command
-        ):
+        if not command or not all(isinstance(value, str) and value for value in command):
             raise ValueError("argv must contain at least one non-empty string")
         if type(secret) is not bytes or not secret:
             raise ValueError("secret must be non-empty bytes")
@@ -272,8 +462,7 @@ class OSWorldClient:
         expected_capability = {"contract": SECRET_STDIN_EXECUTE_CONTRACT}
         if capability != expected_capability:
             raise GuestAgentError(
-                "guest does not attest the secret-stdin execute contract: "
-                f"{capability!r}"
+                f"guest does not attest the secret-stdin execute contract: {capability!r}"
             )
 
         result = self._request_json(
@@ -305,7 +494,7 @@ class OSWorldClient:
                 f"rc={result['returncode']!r}"
             )
 
-    def write_file(self, path: str, content: bytes) -> None:
+    def write_guest_file(self, path: str, content: bytes) -> None:
         """Push bytes to an absolute guest path.
 
         Over ``/execute`` and base64, so nothing about the content is ever
@@ -328,9 +517,9 @@ class OSWorldClient:
                 f"{len(content)} bytes do not fit in one guest argv element "
                 f"(limit {GUEST_PROGRAM_MAX_BYTES} bytes of base64 program text)"
             )
-        self.execute(["python3", "-c", program])
+        self._execute_command(["python3", "-c", program])
 
-    def execute_detached(
+    def spawn_guest(
         self,
         argv: Sequence[str],
         *,
@@ -392,7 +581,7 @@ class OSWorldClient:
         last: GuestAgentError | None = None
         for attempt in range(_DETACHED_CALL_ATTEMPTS):
             try:
-                return self.execute(
+                return self._execute_command(
                     argv, check=False, timeout_s=_DETACHED_CONTROL_TIMEOUT_S
                 )
             except GuestAgentError as exc:
@@ -407,7 +596,7 @@ class OSWorldClient:
         # Never allowed to raise: it runs on both the success and the timeout
         # path, where it would replace the outcome the caller is waiting for.
         with contextlib.suppress(GuestAgentError):
-            self.execute(
+            self._execute_command(
                 ["sh", "-c", _DETACHED_DISCARD_SOURCE, "sh", base, pid],
                 check=False,
                 timeout_s=_DETACHED_CONTROL_TIMEOUT_S,
@@ -441,16 +630,8 @@ class OSWorldClient:
     def cursor_position(self) -> tuple[int, int]:
         """Where the guest thinks the pointer is, as a two-element JSON array.
 
-        A fifth endpoint beyond the four above, kept deliberately: the codec
-        contract is ``compile(text, geometry, cursor)``, so something has to
-        supply the cursor as data, and the alternative -- round-tripping
-        ``pyautogui.position()`` through ``/execute`` -- costs an interpreter
-        start per read.
-
-        Exactly one accepted shape, the one the guest sends, and the same shape
-        ``HttpGuiTransport.cursor_position`` accepts.  Two readers of one endpoint
-        disagreeing about its wire format is how a guest change gets diagnosed as
-        an intermittent executor bug.
+        Exactly one accepted shape, the one the guest sends. Accepting multiple
+        shapes would let a guest contract change masquerade as an executor bug.
         """
         payload = self._request_json("GET", "/cursor_position")
         if not isinstance(payload, list) or len(payload) != 2:

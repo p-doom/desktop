@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -9,7 +10,8 @@ import time
 import pytest
 
 from desktop import ir
-from desktop.execute.guest_program import compile_atomic_guest_program
+from desktop.execute.protocol import build_action_request
+from desktop.vm.client import ACTION_EXECUTOR_PATH
 
 
 @pytest.fixture(scope="module")
@@ -52,15 +54,21 @@ def x_display():
 
 
 def _run_while_updating(
-    root, argv: list[str], env: dict[str, str]
+    root, argv: list[str], env: dict[str, str], *, stdin: str | None = None
 ) -> subprocess.CompletedProcess:
     process = subprocess.Popen(
         argv,
         env=env,
+        stdin=subprocess.PIPE if stdin is not None else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+    if stdin is not None:
+        assert process.stdin is not None
+        process.stdin.write(stdin)
+        process.stdin.close()
+        process.stdin = None
     while process.poll() is None:
         root.update()
         time.sleep(0.002)
@@ -106,10 +114,15 @@ def test_click_event_shape_matches_xdotool(x_display, focused_tk):
     _run_while_updating(root, ["xdotool", "click", "1"], env)
     oracle = list(observed)
     observed.clear()
-    source, _ = compile_atomic_guest_program(
+    request, _, _ = build_action_request(
         (ir.click("left"),), initial_buttons=set(), initial_keys=set()
     )
-    _run_while_updating(root, [sys.executable, "-c", source], env)
+    _run_while_updating(
+        root,
+        [sys.executable, str(ACTION_EXECUTOR_PATH)],
+        env,
+        stdin=json.dumps(request),
+    )
     assert oracle == ["button_press", "button_release"]
     assert observed == oracle
 
@@ -131,9 +144,7 @@ def test_unicode_keysym_and_keymap_restoration_extend_the_xdotool_ascii_oracle(
     first = int(info.min_keycode)
     count = int(info.max_keycode) - first + 1
     before = display.get_keyboard_mapping(first, count)
-    _run_while_updating(
-        root, ["xdotool", "windowfocus", str(entry.winfo_id())], env
-    )
+    _run_while_updating(root, ["xdotool", "windowfocus", str(entry.winfo_id())], env)
     ascii_text = "ab"
     _run_while_updating(root, ["xdotool", "type", "--delay", "0", "--", ascii_text], env)
     oracle = entry.get()
@@ -141,10 +152,15 @@ def test_unicode_keysym_and_keymap_restoration_extend_the_xdotool_ascii_oracle(
     entry.delete(0, "end")
     keysyms.clear()
     text = "a✓b"
-    source, _ = compile_atomic_guest_program(
+    request, _, _ = build_action_request(
         (ir.coalesced_type(text),), initial_buttons=set(), initial_keys=set()
     )
-    _run_while_updating(root, [sys.executable, "-c", source], env)
+    _run_while_updating(
+        root,
+        [sys.executable, str(ACTION_EXECUTOR_PATH)],
+        env,
+        stdin=json.dumps(request),
+    )
     after_executor = display.get_keyboard_mapping(first, count)
     display.close()
     assert oracle == ascii_text
