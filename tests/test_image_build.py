@@ -129,6 +129,7 @@ def test_the_build_boot_always_enables_kvm(config):
     # hours to produce the same bytes, so the argv must not be reachable without
     # /dev/kvm.
     assert "tcg" not in " ".join(argv)
+    assert "virtio-vga" not in argv
 
 
 def test_the_image_under_build_is_not_opened_with_snapshot_on(config):

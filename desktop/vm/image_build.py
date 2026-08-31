@@ -329,8 +329,6 @@ def qemu_argv(
         f"user,id=net0,hostfwd=tcp:127.0.0.1:{server_port}-:5000",
         "-device",
         "virtio-net-pci,netdev=net0",
-        "-device",
-        "virtio-vga",
         "-display",
         "none",
         "-qmp",
