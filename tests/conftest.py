@@ -115,6 +115,6 @@ def pytest_collection_modifyitems(
 @pytest.fixture
 def recording():
     """A fresh ``RecordingTransport``."""
-    from desktop.execute.transport import RecordingTransport
+    from tests.support.recording_transport import RecordingTransport
 
     return RecordingTransport()

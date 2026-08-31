@@ -28,7 +28,7 @@ from .keymap import (
     key_chord,
     key_press,
 )
-from .transport import GuiTransport, HttpGuiTransport, RecordingTransport
+from .transport import GuiTransport, HttpGuiTransport
 
 __all__ = [
     "ALL_POINTER_BUTTON_MASK",
@@ -46,7 +46,6 @@ __all__ = [
     "HttpGuiTransport",
     "InputAudit",
     "KeymapError",
-    "RecordingTransport",
     "StepReceipt",
     "compile_atomic_guest_program",
     "guest_button",

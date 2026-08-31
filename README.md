@@ -50,7 +50,7 @@ with DesktopSession(runtime) as session:
 | `ir.py` | `Operation(kind: str, args: tuple)` — open `kind` vocabulary, never an `Enum`. Includes an explicit `drag(x0,y0,x1,y1)` so a zero-extent drag survives resolution instead of collapsing into a no-op. |
 | `geometry.py` | `DisplayGeometry`, `scale_normalized_coordinate`, `anthropic_scale_coordinates` — copied verbatim from Harbor, for callers resolving model coordinates. |
 | `execute/guest_program.py` | Compiles one action into exactly one ordered guest process, with verified pointer state and guaranteed cleanup. |
-| `execute/transport.py` | The `GuiTransport` protocol, a `urllib` HTTP implementation, and `RecordingTransport` — an in-process double, so the executor is testable without a VM. |
+| `execute/transport.py` | The `GuiTransport` protocol and a `urllib` HTTP implementation. |
 | `execute/keymap.py` | The key and pointer-button name tables, and the chord and transition helpers over them. |
 | `execute/engine.py` | Applies operations, verifies the cursor readback, emits a receipt. |
 | `vm/runtime.py` | The `Runtime` protocol: start, stop, checkpoint, restore, fork. |

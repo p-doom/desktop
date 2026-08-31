@@ -13,7 +13,7 @@ from desktop.execute.guest_program import (
     ExecutionError,
     InputAudit,
 )
-from desktop.execute.transport import RecordingTransport
+from tests.support.recording_transport import RecordingTransport
 
 
 def _result(**overrides) -> AtomicExecutionResult:
