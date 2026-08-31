@@ -2,8 +2,7 @@
 
 The engine starts from resolved ``Operation``s and drives a transport, so its own
 code contains no action names, no ``match`` on a grammar, and no coordinate
-convention.  Its optional ``apply_text`` reaches a grammar only through the
-``Codec`` protocol.
+convention.
 
 Every action is verified by cursor readback: the guest reports its own
 before/after cursor, and the host reads the cursor independently on both sides.
@@ -75,14 +74,6 @@ class Engine:
     def cursor(self) -> tuple[int, int]:
         return self.transport.cursor_position()
 
-    def resolution_context(self) -> tuple[DisplayGeometry, tuple[int, int]]:
-        """The pair every ``Codec.compile`` needs, fetched together.
-
-        Fetched together and returned together so a caller cannot accidentally
-        resolve a delta against a cursor read after the geometry changed.
-        """
-        return self.geometry(), self.cursor()
-
     def apply(self, operations: tuple[Operation, ...]) -> StepReceipt:
         """Send one action -- one guest process -- and build its receipt."""
         host_before = self.transport.cursor_position()
@@ -136,17 +127,6 @@ class Engine:
                 f"guest action failed: {receipt.error}", evidence=receipt.as_dict()
             )
         return receipt
-
-    def apply_text(self, text: str, codec: Any) -> StepReceipt:
-        """Compile model output through a codec, then apply it.
-
-        ``codec`` is anything satisfying ``desktop.codec_protocol.Codec``.
-        The geometry and cursor are fetched here and passed *into* the codec, so
-        the codec resolves against live state and this engine never learns which
-        convention was resolved.
-        """
-        geometry, cursor = self.resolution_context()
-        return self.apply(tuple(codec.compile(text, geometry, cursor)))
 
     def _execute(self, operations: tuple[Operation, ...]) -> AtomicExecutionResult:
         return self.transport.execute_atomic(operations)

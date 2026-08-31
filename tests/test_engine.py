@@ -181,29 +181,6 @@ def test_geometry_comes_from_the_transport(recording):
     assert (geometry.window_width, geometry.window_height) == (0, 0)
 
 
-def test_resolution_context_returns_geometry_and_cursor_together(recording):
-    geometry, cursor = Engine(recording).resolution_context()
-    assert cursor == (50, 50)
-    assert geometry.desktop_width == 1920
-
-
-def test_apply_text_passes_live_geometry_and_cursor_into_the_codec(recording):
-    seen = {}
-
-    class Codec:
-        name = "probe"
-        handlers: dict = {}
-
-        def compile(self, text, geometry, cursor):
-            seen.update(text=text, geometry=geometry, cursor=cursor)
-            return (ir.move_to(11, 22),)
-
-    recording.move_to(100, 100)
-    receipt = Engine(recording).apply_text("anything", Codec())
-    assert seen["cursor"] == (100, 100)
-    assert seen["geometry"].desktop_width == 1920
-    assert receipt.cursor_after == (11, 22)
-
 
 def test_the_engine_source_contains_no_action_name_or_coordinate_flag():
     """The engine's whole reason for existing: it must stay grammar-free."""

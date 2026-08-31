@@ -17,10 +17,8 @@ never import it, and must never learn what a fleet is. That is what keeps it
 usable against one VM with no scheduler, and it is why the Pillow-only
 dependency floor below can hold.
 
-Nothing here knows what an action grammar is. Whichever coordinate convention a
-model emits is resolved inside your own `Codec.compile(text, geometry, cursor)`
-before an `Operation` exists, so an absolute-coordinate model and a
-relative-delta model both use this package unchanged.
+Nothing here knows what an action grammar is. Callers resolve model output into
+absolute-pixel `Operation`s before handing it to this package.
 
 One Python runtime dependency: Pillow, imported in `vm/readiness.py` to
 downsample a screenshot and measure whether the framebuffer is still black.
@@ -42,39 +40,15 @@ with DesktopSession(runtime) as session:
     # Either hand it resolved operations directly...
     engine.apply((Operation("move_to", (640, 400)), Operation("click", ("left",))))
 
-    # ...or let your own codec resolve model output first. The geometry and the
-    # cursor are passed into the codec as data.
-    engine.apply_text(model_output, codec=your_codec)
-
     session.reset()   # ~4.5 s, and it proves the guest actually rewound
 ```
-
-## The codec contract
-
-`your_codec` satisfies `desktop.codec_protocol.Codec` and lives in *your*
-repository. That is the whole contract:
-
-```python
-class Codec(Protocol):
-    name: str
-    stop_sequences: tuple[str, ...]        # an attribute, not a method
-    def parse(self, text) -> object: ...
-    def format(self, action) -> str: ...   # the inverse: your SFT-target generator
-    def compile(self, text, geometry, cursor) -> tuple[Operation, ...]: ...
-    def describe(self) -> str: ...         # the system prompt, from docstrings
-```
-
-There is no coordinate-space enum in this package. The convention is an open
-record inside each codec, and the resolution context arrives as data through
-`compile(...)`.
 
 ## Layout
 
 | path | what |
 |---|---|
 | `ir.py` | `Operation(kind: str, args: tuple)` — open `kind` vocabulary, never an `Enum`. Includes an explicit `drag(x0,y0,x1,y1)` so a zero-extent drag survives resolution instead of collapsing into a no-op. |
-| `geometry.py` | `DisplayGeometry`, `scale_normalized_coordinate`, `anthropic_scale_coordinates` — copied verbatim from Harbor, offered to codecs as resolution tools. |
-| `codec_protocol.py` | The `Codec` protocol, plus a docstring-as-single-source action-set skeleton vendored from BrowserGym: one declaration derives the prompt, examples, validation, lowering, and tool-JSON. |
+| `geometry.py` | `DisplayGeometry`, `scale_normalized_coordinate`, `anthropic_scale_coordinates` — copied verbatim from Harbor, for callers resolving model coordinates. |
 | `execute/guest_program.py` | Compiles one action into exactly one ordered guest process, with verified pointer state and guaranteed cleanup. |
 | `execute/transport.py` | The `GuiTransport` protocol, a `urllib` HTTP implementation, and `RecordingTransport` — an in-process double, so the executor is testable without a VM. |
 | `execute/keymap.py` | The key and pointer-button name tables, and the chord and transition helpers over them. |
@@ -93,7 +67,6 @@ record inside each codec, and the resolution context arrives as data through
 ## Provenance
 
 Copied verbatim or near-verbatim, with attribution in each file: Harbor
-(`geometry.py`), BrowserGym (`codec_protocol.py` skeleton), NeMo-Gym
-(`sandbox_protocol.py` types), `anthropics/claude-quickstarts` `computer-use-demo`
+(`geometry.py`), NeMo-Gym (`sandbox_protocol.py` types), `anthropics/claude-quickstarts` `computer-use-demo`
 (`images/desktop-nonkvm.def`). `trycua/cua` was read as a reference only — the CoW
 fork and TCG fallback in `vm/qemu.py` are reimplementations of ideas, not code.
