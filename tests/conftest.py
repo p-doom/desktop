@@ -82,9 +82,7 @@ def pytest_configure(config: pytest.Config) -> None:
         config.addinivalue_line("markers", f"{marker}: {description}")
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     no_qemu = pytest.mark.skip(
         reason="no qemu binary: set DESKTOP_ENV_QEMU_BIN / DESKTOP_ENV_QEMU_IMG_BIN"
     )
@@ -114,7 +112,7 @@ def pytest_collection_modifyitems(
 
 @pytest.fixture
 def recording():
-    """A fresh ``RecordingTransport``."""
-    from desktop.execute.transport import RecordingTransport
+    """A fresh ``RecordingClient``."""
+    from tests.support.recording_transport import RecordingClient
 
-    return RecordingTransport()
+    return RecordingClient()

@@ -2,11 +2,11 @@
 
 Why this is first: every grammar emits ``scroll(0, dy)``.  A one-arity reader
 would take ``args[0]`` as the vertical ticks and lower every one of them to
-``pyautogui.scroll(0)`` -- a no-op wheel event, on every scroll, in every grammar,
+an XTEST button with a zero count -- a no-op on every scroll in every grammar,
 with no error anywhere.  It would present as "the model never learned to scroll".
 
-So the assertions here are about the DIRECTION and MAGNITUDE that reach
-``pyautogui``, not merely about the shape of the tuple.
+So the assertions here are about the X11 wheel button, direction, and magnitude,
+not merely about the shape of the tuple.
 
 ``(dx, dy)`` is the only accepted shape: anything else is a loud error, not a
 second contract two layers have to keep in agreement.
@@ -17,10 +17,9 @@ from __future__ import annotations
 import pytest
 
 from desktop import ir
-from desktop.execute.guest_program import compile_atomic_guest_program
+from desktop.execute.protocol import build_action_request
 from desktop.ir import Operation, scroll_deltas
 from tests.support.guest_runner import run_guest_program
-
 
 
 @pytest.mark.parametrize(
@@ -49,40 +48,39 @@ def test_constructor_and_reader_round_trip():
     assert scroll_deltas(ir.scroll(2, -9).args) == (2, -9)
 
 
-def _scroll_lines(operation: Operation) -> list[str]:
-    program, _ = compile_atomic_guest_program(
+def _compile_scroll(operation: Operation) -> dict:
+    request, _, _ = build_action_request(
         (operation,), initial_buttons=set(), initial_keys=set()
     )
-    return [
-        line.strip()
-        for line in program.splitlines()
-        if "pyautogui.scroll(" in line or "pyautogui.hscroll(" in line
-    ]
+    return request
+
+
+def _scroll_details(operation: Operation) -> list[int]:
+    run = run_guest_program((operation,))
+    assert run.returncode == 0, run.stderr
+    return [event["detail"] for event in run.payload["x_injection_evidence"]]
 
 
 def test_the_grammar_shaped_call_lowers_to_a_real_vertical_scroll():
-    """``scroll(0, 3)`` must NOT become ``pyautogui.scroll(0)``."""
-    assert _scroll_lines(ir.scroll(0, 3)) == ["pyautogui.scroll(3)"]
-    assert "pyautogui.scroll(0)" not in _scroll_lines(ir.scroll(0, 3))
+    assert _scroll_details(ir.scroll(0, 3)) == [4, 4] * 3
 
 
 def test_a_one_arity_scroll_is_refused_by_the_compiler():
     with pytest.raises(ValueError, match="exactly"):
-        _scroll_lines(Operation("scroll", (3,)))
+        _compile_scroll(Operation("scroll", (3,)))
 
 
 def test_horizontal_only_uses_hscroll_and_emits_no_vertical_event():
-    assert _scroll_lines(ir.scroll(-2, 0)) == ["pyautogui.hscroll(-2)"]
+    assert _scroll_details(ir.scroll(-2, 0)) == [6, 6] * 2
 
 
 def test_both_axes_emit_both_primitives():
-    lines = _scroll_lines(ir.scroll(4, 5))
-    assert "pyautogui.hscroll(4)" in lines
-    assert "pyautogui.scroll(5)" in lines
+    details = _scroll_details(ir.scroll(4, 5))
+    assert details == [7, 7] * 4 + [4, 4] * 5
 
 
 def test_a_zero_scroll_emits_no_wheel_event_at_all():
-    assert _scroll_lines(ir.scroll(0, 0)) == []
+    assert _scroll_details(ir.scroll(0, 0)) == []
 
 
 @pytest.mark.parametrize(("dy", "expected"), [(3, 3), (-3, -3), (1, 1)])
@@ -91,22 +89,27 @@ def test_executed_vertical_scroll_passes_the_signed_tick_count(dy, expected):
     run = run_guest_program((ir.scroll(0, dy),))
     assert run.returncode == 0, run.stderr
     assert run.payload is not None and run.payload["ok"] is True
-    assert run.pyautogui_calls == [["scroll", expected]]
+    button = 4 if expected > 0 else 5
+    assert [event["detail"] for event in run.payload["x_injection_evidence"]] == [
+        button,
+        button,
+    ] * abs(expected)
     assert run.trace() == [("scroll", [0, dy])]
     assert run.primitives("scroll") == [
-        {"kind": "scroll", "call": "pyautogui.scroll/hscroll", "dx": 0, "dy": dy}
+        {"kind": "scroll", "backend": "python-xlib XTEST", "dx": 0, "dy": dy}
     ]
 
 
 def test_executed_diagonal_scroll_moves_both_axes_with_the_right_signs():
     run = run_guest_program((ir.scroll(-6, 7),))
-    assert run.pyautogui_calls == [["hscroll", -6], ["scroll", 7]]
+    details = [event["detail"] for event in run.payload["x_injection_evidence"]]
+    assert details == [6, 6] * 6 + [4, 4] * 7
     assert run.trace() == [("scroll", [-6, 7])]
 
 
 def test_executed_zero_scroll_touches_no_wheel_but_is_still_reported():
     run = run_guest_program((ir.scroll(0, 0),))
-    assert run.pyautogui_calls == []
+    assert run.payload["x_injection_evidence"] == []
     assert run.trace() == [("scroll", [0, 0])]
 
 
@@ -120,41 +123,27 @@ def test_recording_transport_trace_matches_the_guest_trace(recording, args):
     """
     dx, dy = scroll_deltas(args)
     guest = run_guest_program((Operation("scroll", args),))
-    result = recording.execute_atomic((Operation("scroll", args),))
+    result = recording.execute((Operation("scroll", args),))
     assert [(op.kind, list(op.args)) for op in result.operations] == guest.trace()
     assert [(op.kind, op.args) for op in result.operations] == [("scroll", (dx, dy))]
 
 
 def test_recording_transport_scroll_total_counts_vertical_ticks(recording):
-    recording.execute_atomic((ir.scroll(0, 3),))
-    recording.execute_atomic((ir.scroll(9, -1),))
-    recording.execute_atomic((ir.scroll(0, 5),))
+    recording.execute((ir.scroll(0, 3),))
+    recording.execute((ir.scroll(9, -1),))
+    recording.execute((ir.scroll(0, 5),))
     assert recording.audit.scroll_total == 3 - 1 + 5
 
 
 def test_audit_absorption_reads_the_vertical_axis_of_a_scroll_trace():
-    """``HttpGuiTransport._absorb`` reads index 1, i.e. dy, of a two-axis trace."""
-    from desktop.execute.guest_program import AtomicExecutionResult
-    from desktop.execute.transport import HttpGuiTransport
+    from desktop.vm.client import DesktopClient
 
-    transport = HttpGuiTransport("http://127.0.0.1:1")
-    result = AtomicExecutionResult(
-        ok=True,
-        cursor=(0, 0),
-        cursor_before=(0, 0),
-        cursor_after=(0, 0),
-        pointer_button_mask=0,
-        observed_pointer_button_mask=0,
-        expected_pointer_button_mask=0,
-        guest_process_count=1,
-        guest_returncode=0,
-        raw_result_marker="",
-        cleanup_attempted=False,
-        error=None,
-        failure_kind=None,
-        operations=(Operation("scroll", (11, -4)),),
-        semantic_operations=(),
-        lowered_operations=(),
+    client = DesktopClient("http://127.0.0.1:1")
+    client._absorb_action(
+        {
+            "operations": (Operation("scroll", (11, -4)),),
+            "pointer_button_mask": 0,
+            "held_keys": (),
+        }
     )
-    transport._absorb(result, expected_keys=set())
-    assert transport.audit.scroll_total == -4
+    assert client.audit.scroll_total == -4

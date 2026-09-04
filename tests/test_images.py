@@ -46,7 +46,7 @@ def nonkvm_text() -> str:
 def test_both_definitions_exist_and_are_packaged():
     assert KVM_DEF.is_file() and NONKVM_DEF.is_file() and IMAGES_README.is_file()
     pyproject = (IMAGES_DIR.parent.parent.parent / "pyproject.toml").read_text()
-    assert '"desktop.vm.images" = ["*.def", "*.md"]' in pyproject
+    assert '"desktop.vm.images" = ["*.def", "*.md", "*.patch"]' in pyproject
 
 
 @pytest.mark.parametrize("definition", [KVM_DEF, NONKVM_DEF])
@@ -109,7 +109,7 @@ def test_the_nonkvm_test_section_gives_pyautogui_the_display_it_requires(nonkvm_
     assert "xvfb-run -a python3 -c" in test_section
     assert "import Xlib, pyautogui" in test_section
     # The bare, display-less form must not come back.
-    assert "\n    python3 -c \"import Xlib, pyautogui\"" not in test_section
+    assert '\n    python3 -c "import Xlib, pyautogui"' not in test_section
     # ... and the binary it now depends on is checked for.
     assert "xvfb-run" in test_section.split("for binary in")[1].split(";")[0]
 
@@ -134,10 +134,10 @@ def test_the_kvm_tier_still_checks_for_the_qemu_BINARY_by_its_real_name(kvm_text
     test_section = _section(kvm_text, "test")
     assert "command -v qemu-system-x86_64" in test_section
     assert "command -v qemu-img" in test_section
-    from desktop.vm.factory import build_qemu_runtime  # noqa: F401
     import inspect
 
     from desktop.vm import factory
+    from desktop.vm.factory import build_qemu_runtime  # noqa: F401
 
     assert '"qemu-system-x86_64"' in inspect.getsource(factory)
 
@@ -175,22 +175,20 @@ def test_the_nonkvm_tier_states_it_gives_no_parity(nonkvm_text):
 
 
 def test_the_nonkvm_tier_installs_the_input_stack_the_executor_needs(nonkvm_text):
-    """The only reason this tier can test the executor: the same primitive names."""
+    """The executor gets Xlib; PyAutoGUI remains for OSWorld setup and graders."""
     post = _section(nonkvm_text, "post")
     assert "pyautogui==0.9.54" in post
     assert "python-xlib==0.33" in post
-    assert "python3-gi" in post and "gir1.2-gtk-3.0" in post
 
 
-def test_the_nonkvm_tier_installs_the_gtk_bindings_the_typing_path_imports(nonkvm_text):
-    """``compile_unicode_coalesced_type`` emits ``import gi`` + Gtk 3.0."""
-    from desktop.execute.guest_program import compile_unicode_coalesced_type
+def test_the_nonkvm_tier_installs_the_xlib_binding_the_typing_path_imports(nonkvm_text):
+    from desktop.vm.client import ACTION_EXECUTOR_PATH
 
-    # Non-ASCII: the payload class that still needs the guest's GTK bindings.
-    program = compile_unicode_coalesced_type("é")
-    assert "gi.require_version('Gtk','3.0')" in program
+    program = ACTION_EXECUTOR_PATH.read_text()
+    assert "from Xlib import X" in program
+    assert "Gtk" not in program and "pyautogui" not in program
     post = _section(nonkvm_text, "post")
-    assert "python3-gi" in post and "gir1.2-gtk-3.0" in post
+    assert "python-xlib==0.33" in post
 
 
 def test_the_nonkvm_tier_pins_its_novnc_checkout(nonkvm_text):
@@ -211,9 +209,7 @@ def _start_desktop_script(text: str) -> str:
 
 def _commands_only(script: str) -> str:
     """The script with comment lines dropped, so ordering is about real commands."""
-    return "\n".join(
-        line for line in script.splitlines() if not line.lstrip().startswith("#")
-    )
+    return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
 
 
 def test_the_nonkvm_startup_waits_for_xvfb_before_the_window_manager(nonkvm_text):
@@ -372,9 +368,7 @@ def test_the_built_kvm_tier_passes_its_own_test_section():
 
     sif = test_sif()
     assert sif is not None
-    result = subprocess.run(
-        ["apptainer", "test", str(sif)], capture_output=True, text=True
-    )
+    result = subprocess.run(["apptainer", "test", str(sif)], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "qemu present" in result.stdout
 
@@ -387,7 +381,7 @@ def test_the_built_kvm_tier_pins_the_qmp_directory_at_runtime():
     sif = test_sif()
     assert sif is not None
     result = subprocess.run(
-        ["apptainer", "exec", str(sif), "bash", "-lc", "printf %s \"$DESKTOP_ENV_QMP_DIR\""],
+        ["apptainer", "exec", str(sif), "bash", "-lc", 'printf %s "$DESKTOP_ENV_QMP_DIR"'],
         capture_output=True,
         text=True,
     )
@@ -482,8 +476,7 @@ def test_the_nonkvm_tier_really_has_no_browser():
             str(sif),
             "bash",
             "-lc",
-            "command -v chromium chromium-browser firefox google-chrome 2>/dev/null "
-            "| head -1",
+            "command -v chromium chromium-browser firefox google-chrome 2>/dev/null | head -1",
         ],
         capture_output=True,
         text=True,

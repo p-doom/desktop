@@ -52,9 +52,7 @@ From: ubuntu:22.04
     apt-get update
     apt-get -y upgrade
 
-    # UI stack.  xdotool is the input path for this tier: there is no in-guest
-    # HTTP agent here, so a caller drives it over `apptainer exec` rather than
-    # over the transport in desktop/execute/transport.py.
+    # xdotool is a differential oracle for executor tests, never its input path.
     apt-get -y install --no-install-recommends \
         xvfb \
         xterm \
@@ -95,11 +93,11 @@ From: ubuntu:22.04
         /opt/noVNC/utils/websockify
     ln -sf /opt/noVNC/vnc.html /opt/noVNC/index.html
 
-    # pyautogui + python-xlib give this tier the same input primitive names the
-    # KVM guest has, so a guest program compiled by
-    # desktop/execute/guest_program.py runs here too.  That is the only reason
-    # this tier is useful for testing the executor at all.
-    python3 -m pip install --no-cache-dir pyautogui==0.9.54 python-xlib==0.33 pillow
+    # PyAutoGUI remains for OSWorld setup/evaluator code.  The executor imports
+    # only python-xlib, installed last because PyAutoGUI pulls the conflicting
+    # python3-xlib distribution into the same Xlib namespace.
+    python3 -m pip install --no-cache-dir pyautogui==0.9.54 pillow
+    python3 -m pip install --no-cache-dir --force-reinstall python-xlib==0.33
 
     apt-get clean
     rm -rf /var/lib/apt/lists/*
@@ -155,8 +153,7 @@ SCRIPT
     export VNC_PORT=5900
     export NOVNC_PORT=6080
     export PATH=/opt/desktop-env/bin:$PATH
-    # pyautogui refuses to import without a writable temp dir for its screenshot
-    # backend; /tmp is tmpfs inside an instance, which is enough.
+    # OSWorld's PyAutoGUI setup/evaluator imports need writable runtime paths.
     export XDG_RUNTIME_DIR=/tmp/runtime
     export HOME=/tmp/home
     # ... and the two directories are created HERE, not only in %startscript /

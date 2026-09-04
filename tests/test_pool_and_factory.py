@@ -36,16 +36,17 @@ from desktop.vm.factory import (
     qemu_session_factory,
 )
 from desktop.vm.pool import (
+    HUB_PORT_RANGE,
     PORT_BASE,
     DesktopPoolConfig,
     PortLease,
     WorkerPorts,
+    acquire_port_range,
     allocate_worker_ports,
     ports_for_worker,
 )
 from desktop.vm.qemu import QemuError, QemuRuntime
 from desktop.vm.runtime import GuestPorts
-
 
 _PORT_WINDOW = itertools.count()
 
@@ -76,12 +77,14 @@ def port_base(monkeypatch):
         return True
 
     # Walk candidate windows rather than skipping on the first busy one: another
-    # tenant of the node holding a single port must not cost a test.
-    for _ in range(40):
-        base = 61000 + (os.getpid() % 20) * 150 + next(_PORT_WINDOW) * 80
-        base -= base % 10
-        if base + 80 > 65535:
-            break
+    # tenant of the node holding a single port must not cost a test.  The walk
+    # WRAPS inside the 55 windows that fit above the ephemeral range; it used to
+    # run off 65535 and skip, so once this module held more ``port_base`` tests
+    # than the per-process offset left room for, the tail of them silently
+    # stopped running -- eight of them, measured.
+    for _ in range(55):
+        offset = (os.getpid() % 20) * 160 + next(_PORT_WINDOW) * 80
+        base = 61000 + offset % 4400
         if window_is_free(base):
             return base
     pytest.skip("no free 80-port window above the ephemeral range")
@@ -289,7 +292,11 @@ def test_a_port_already_bound_by_something_else_is_skipped(port_base, tmp_path):
 def test_port_blocks_are_strided_and_aligned():
     block = ports_for_worker(20000, 3, stride=10)
     assert block == WorkerPorts(
-        server=20030, chromium=20031, vnc=20032, vlc=20033
+        server=20030,
+        chromium=20031,
+        vnc=20032,
+        vlc=20033,
+        auxiliary=(20034, 20035, 20036, 20037, 20038, 20039),
     )
     assert ports_for_worker(20000, 0).server + 10 == ports_for_worker(20000, 1).server
 
@@ -333,6 +340,277 @@ def test_exhausting_every_slot_raises_rather_than_reusing_one(port_base, tmp_pat
     finally:
         for lease in leases:
             lease.release()
+
+
+def test_an_acquired_range_is_contiguous_and_describes_itself(port_base, tmp_path):
+    with acquire_port_range(
+        count=3,
+        purpose="unit-test",
+        range_start=port_base,
+        range_end=port_base + 30,
+        lock_dir=tmp_path / "locks",
+    ) as lease:
+        assert lease.ports == (lease.start, lease.start + 1, lease.start + 2)
+        assert lease.end == lease.start + 2
+        assert lease.purpose == "unit-test"
+        for port in lease.ports:
+            assert (tmp_path / "locks" / f"port-{port}.lock").is_file()
+    assert lease._released is True
+
+
+def test_an_exhausted_range_raises_rather_than_reusing_a_port(port_base, tmp_path):
+    held = [
+        acquire_port_range(
+            count=2,
+            purpose="unit-test",
+            range_start=port_base,
+            range_end=port_base + 3,
+            lock_dir=tmp_path / "locks",
+            step=2,
+        )
+        for _ in range(2)
+    ]
+    try:
+        assert {lease.start for lease in held} == {port_base, port_base + 2}
+        with pytest.raises(RuntimeError, match="no available port blocks of 2"):
+            acquire_port_range(
+                count=2,
+                purpose="unit-test",
+                range_start=port_base,
+                range_end=port_base + 3,
+                lock_dir=tmp_path / "locks",
+                step=2,
+            )
+    finally:
+        for lease in held:
+            lease.release()
+
+
+def test_a_range_held_by_another_PROCESS_is_not_handed_out_again(port_base, tmp_path):
+    """The flock is advisory and cross-process; a same-process test would pass
+    trivially because ``flock`` is per-open-file-description."""
+    locks = tmp_path / "locks"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                f"sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})\n"
+                "from desktop.vm.pool import acquire_port_range\n"
+                "lease = acquire_port_range(\n"
+                f"    count=2, purpose='holder', range_start={port_base},\n"
+                f"    range_end={port_base + 3}, lock_dir={str(locks)!r}, step=2\n"
+                ")\n"
+                "print(lease.start, flush=True)\n"
+                "time.sleep(30)\n"
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        env=os.environ.copy(),
+    )
+    try:
+        held_start = int(holder.stdout.readline().strip())
+        mine = acquire_port_range(
+            count=2,
+            purpose="unit-test",
+            range_start=port_base,
+            range_end=port_base + 3,
+            lock_dir=locks,
+            step=2,
+        )
+        try:
+            assert mine.start != held_start
+            assert set(mine.ports).isdisjoint({held_start, held_start + 1})
+        finally:
+            mine.release()
+    finally:
+        holder.kill()
+        holder.wait()
+        holder.stdout.close()
+
+
+def test_a_loopback_bind_host_probes_only_that_address(port_base, tmp_path):
+    """The value a hub passes, and the only one other than the default.  A probe
+    on loopback must still refuse a port already held there."""
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", port_base))
+    blocker.listen(1)
+    try:
+        with acquire_port_range(
+            count=1,
+            purpose="unit-test",
+            range_start=port_base,
+            range_end=port_base + 9,
+            lock_dir=tmp_path / "locks",
+            bind_host="127.0.0.1",
+        ) as lease:
+            assert lease.start != port_base
+    finally:
+        blocker.close()
+
+
+def test_a_pinned_range_fails_rather_than_sliding_to_another(port_base, tmp_path):
+    """A caller that pinned a base port published it somewhere, so quietly
+    handing back a different one is worse than failing."""
+    first = acquire_port_range(
+        count=2,
+        purpose="unit-test",
+        range_start=port_base,
+        range_end=port_base + 9,
+        lock_dir=tmp_path / "locks",
+        exact_start=port_base,
+    )
+    try:
+        with pytest.raises(RuntimeError, match=f"port range {port_base}-"):
+            acquire_port_range(
+                count=2,
+                purpose="unit-test",
+                range_start=port_base,
+                range_end=port_base + 9,
+                lock_dir=tmp_path / "locks",
+                exact_start=port_base,
+            )
+    finally:
+        first.release()
+
+
+def test_a_range_whose_port_is_bound_by_something_else_is_skipped(port_base, tmp_path):
+    blocker = socket.socket()
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocker.bind(("", port_base + 1))
+    blocker.listen(1)
+    try:
+        with acquire_port_range(
+            count=2,
+            purpose="unit-test",
+            range_start=port_base,
+            range_end=port_base + 9,
+            lock_dir=tmp_path / "locks",
+        ) as lease:
+            assert port_base + 1 not in lease.ports
+    finally:
+        blocker.close()
+
+
+def test_a_worker_block_and_a_free_range_share_one_lock_namespace(port_base, tmp_path):
+    """The point of having ONE primitive.  A second allocator with its own lock
+    naming would hand a hub the very ports a desktop is already forwarding."""
+    locks = tmp_path / "locks"
+    worker = allocate_worker_ports(
+        lock_dir=locks, work_dir=tmp_path / "w", log_dir=tmp_path / "g", base=port_base
+    )
+    try:
+        with pytest.raises(RuntimeError, match="no available port blocks"):
+            acquire_port_range(
+                count=1,
+                purpose="unit-test",
+                range_start=worker.ports.server,
+                range_end=worker.ports.auxiliary[-1],
+                lock_dir=locks,
+            )
+    finally:
+        worker.release()
+
+
+def test_every_new_primitive_is_reachable_from_the_subpackage():
+    """The consumer imports from ``desktop.vm``, so a name that exists in a
+    module but is missing from the package is not delivered."""
+    import desktop.vm as package
+
+    for name in (
+        "HUB_PORT_RANGE",
+        "DesktopResetMode",
+        "GuestCommandResult",
+        "PortRangeLease",
+        "acquire_port_range",
+    ):
+        assert name in package.__all__
+        assert getattr(package, name) is not None
+
+
+def test_the_hub_span_does_not_overlap_the_desktop_span():
+    """Both are leased from the same node-local lock directory, so an overlap
+    would put two kinds of service in contention for one port."""
+    desktop_end = max(ports_for_worker(PORT_BASE, 511).all())
+    assert desktop_end < HUB_PORT_RANGE[0]
+    assert HUB_PORT_RANGE == (30000, 39999)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"count": 0}, "count must be positive"),
+        ({"purpose": "  "}, "purpose must not be empty"),
+        ({"range_start": 0}, "must be within 1-65535"),
+        ({"count": 50}, "smaller than the requested count"),
+        ({"step": 0}, "step must be positive"),
+        ({"exact_start": 70000}, "must lie inside the allocation range"),
+    ],
+)
+def test_an_impossible_range_request_is_refused(port_base, tmp_path, kwargs, message):
+    request = {
+        "count": 2,
+        "purpose": "unit-test",
+        "range_start": port_base,
+        "range_end": port_base + 9,
+        "lock_dir": tmp_path / "locks",
+        **kwargs,
+    }
+    with pytest.raises(ValueError, match=message):
+        acquire_port_range(**request)
+
+
+def test_the_auxiliary_ports_are_the_rest_of_the_stride():
+    block = ports_for_worker(20000, 0, stride=10)
+    assert block.auxiliary == (20004, 20005, 20006, 20007, 20008, 20009)
+    assert block.auxiliary_port() == 20004
+    assert block.auxiliary_port(2) == 20006
+    assert block.all() == (20000, 20001, 20002, 20003, *block.auxiliary)
+
+
+def test_an_auxiliary_port_beyond_the_stride_is_refused():
+    with pytest.raises(ValueError, match="no auxiliary worker port at index 6"):
+        ports_for_worker(20000, 0, stride=10).auxiliary_port(6)
+
+
+def test_an_auxiliary_port_is_leased_and_probed_like_the_forwarded_ones(
+    port_base, tmp_path
+):
+    """A caller binds an auxiliary port for real, so a block whose auxiliary is
+    taken is not usable.  Only the four forwarded ports used to be probed."""
+    blocker = socket.socket()
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocker.bind(("", port_base + 5))  # an auxiliary port of slot 0
+    blocker.listen(1)
+    try:
+        lease = allocate_worker_ports(
+            lock_dir=tmp_path / "locks",
+            work_dir=tmp_path / "w",
+            log_dir=tmp_path / "g",
+            base=port_base,
+        )
+        try:
+            assert lease.slot != 0
+            assert port_base + 5 not in lease.ports.all()
+        finally:
+            lease.release()
+    finally:
+        blocker.close()
+
+
+def test_a_base_with_no_room_for_a_whole_block_is_refused(tmp_path):
+    """65535 is a hard end, and the span is clamped to it, so a base this high
+    reports that no whole block fits.  Unclamped, the span would run to 70649 and
+    the complaint would be about a port number nobody asked for."""
+    with pytest.raises(ValueError, match="smaller than the requested count"):
+        allocate_worker_ports(
+            lock_dir=tmp_path / "locks",
+            work_dir=tmp_path / "w",
+            log_dir=tmp_path / "g",
+            base=65530,
+        )
 
 
 def test_a_failed_boot_is_not_retried_and_tears_the_process_down(image, monkeypatch):
@@ -382,13 +660,18 @@ def test_the_pooled_factory_passes_the_flag_through(port_base, tmp_path, image, 
         "build_desktop_session",
         lambda **kwargs: seen.update(kwargs) or type("S", (), {"start": lambda s: None})(),
     )
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     try:
         qemu_session_factory(image=image, startup_timeout_s=1200.0)(lease)
         assert seen["require_single_task"] is False
-        qemu_session_factory(image=image, startup_timeout_s=1200.0, require_single_task=True)(lease)
+        qemu_session_factory(
+            image=image, startup_timeout_s=1200.0, require_single_task=True
+        )(lease)
         assert seen["require_single_task"] is True
     finally:
         lease.release()
@@ -425,7 +708,24 @@ class DummyRuntime:
         return ()
 
 
-def test_two_sessions_sharing_a_scratch_root_collide_on_the_task_lock(tmp_path):
+@pytest.fixture
+def compatible_guest(monkeypatch):
+    """A no-I/O client for tests concerned only with host session isolation."""
+    import desktop.vm.session as session_module
+
+    class Client:
+        def __init__(self, base_url, *, timeout_s):
+            self.base_url = base_url
+
+        def verify_actions_contract(self):
+            pass
+
+    monkeypatch.setattr(session_module, "DesktopClient", Client)
+
+
+def test_two_sessions_sharing_a_scratch_root_collide_on_the_task_lock(
+    tmp_path, compatible_guest
+):
     """DOCUMENTS A DEFECT in the factory's stated reasoning.
 
     ``require_single_task`` does NOT gate the one-VM-per-task ``flock``: the lock
@@ -450,7 +750,7 @@ def test_two_sessions_sharing_a_scratch_root_collide_on_the_task_lock(tmp_path):
 
 
 def test_what_actually_separates_two_pooled_sessions_is_the_per_lease_scratch_root(
-    tmp_path,
+    tmp_path, compatible_guest
 ):
     """The real mechanism, which the factory docstring attributes to the flag.
 
@@ -483,7 +783,9 @@ def test_what_actually_separates_two_pooled_sessions_is_the_per_lease_scratch_ro
             first.close()
 
 
-def test_the_flag_only_gates_the_scheduler_task_count_check(tmp_path, monkeypatch):
+def test_the_flag_only_gates_the_scheduler_task_count_check(
+    tmp_path, monkeypatch, compatible_guest
+):
     """What ``require_single_task`` actually controls, pinned."""
     from desktop.vm.session import DesktopSession, SessionError
 
@@ -530,7 +832,10 @@ def test_the_lease_workdir_becomes_the_session_scratch_root(
 def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
     from desktop.vm.pool import DesktopPoolSession, _close_session_resources
 
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     closed = []
@@ -547,7 +852,10 @@ def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
     assert closed == [1]
     assert lease._released is True
     # ... and the slot is immediately reusable.
-    again = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    again = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     try:
@@ -557,7 +865,10 @@ def test_closing_a_pooled_session_releases_its_lease(port_base, tmp_path):
 
 
 def test_a_lease_release_is_idempotent(port_base, tmp_path):
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     lease.release()
@@ -566,7 +877,10 @@ def test_a_lease_release_is_idempotent(port_base, tmp_path):
 
 
 def test_a_lease_is_a_context_manager(port_base, tmp_path):
-    with allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    with allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     ) as lease:
         assert isinstance(lease, PortLease)
@@ -611,7 +925,10 @@ def test_a_released_lease_removes_its_own_working_directory(port_base, tmp_path)
 def test_a_lease_whose_scratch_is_not_empty_is_left_alone(port_base, tmp_path):
     """``rmdir``, not ``rmtree``: a session that failed to clean up its own scratch
     must leave visible evidence rather than have it silently deleted."""
-    lease = allocate_worker_ports(lock_dir=tmp_path / "l", work_dir=tmp_path / "w", log_dir=tmp_path / "g",
+    lease = allocate_worker_ports(
+        lock_dir=tmp_path / "l",
+        work_dir=tmp_path / "w",
+        log_dir=tmp_path / "g",
         base=port_base,
     )
     leftover = lease.workdir / "desktop-env-something" / "evidence.txt"
@@ -622,7 +939,7 @@ def test_a_lease_whose_scratch_is_not_empty_is_left_alone(port_base, tmp_path):
 
 
 def test_a_pooled_session_leaves_its_scratch_empty_for_the_lease_to_remove(
-    port_base, tmp_path, image, monkeypatch
+    port_base, tmp_path, image, monkeypatch, compatible_guest
 ):
     """The two halves of the contract have to hold at the same time.
 

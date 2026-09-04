@@ -12,13 +12,25 @@ method's error handling is hand-written and therefore worth checking.
 
 from __future__ import annotations
 
+import base64
+import io
 import json
+import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
+from PIL import Image, ImageDraw
 
-from desktop.vm.osworld_client import GuestAgentError, OSWorldClient
+from desktop.vm.client import (
+    SECRET_STDIN_EXECUTE_CONTRACT,
+    DesktopClient,
+    GuestAgentError,
+    _decode_detached_result,
+)
+from desktop.vm.observation import OBSERVATION_SIZE
 
 #: What the fake agent should answer, per path.  Mutated per test.
 ROUTES: dict = {}
@@ -79,10 +91,38 @@ def agent_server():
 def agent(agent_server):
     """A client pointed at the fake agent, with a clean route table."""
     ROUTES.clear()
-    return OSWorldClient(f"http://127.0.0.1:{agent_server.server_port}", timeout_s=5.0)
+    return DesktopClient(f"http://127.0.0.1:{agent_server.server_port}", timeout_s=5.0)
 
 
-PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+def _jpeg(
+    value: int = 0, *, mode: str = "RGB", size: tuple[int, int] = OBSERVATION_SIZE
+) -> bytes:
+    buffer = io.BytesIO()
+    color: int | tuple[int, int, int] = (value, value, value) if mode == "RGB" else value
+    Image.new(mode, size, color).save(
+        buffer, format="JPEG", quality=92, subsampling=2, optimize=False
+    )
+    return buffer.getvalue()
+
+
+JPEG = _jpeg()
+
+
+def _cursor_composited_jpeg() -> bytes:
+    screenshot = Image.new("RGB", OBSERVATION_SIZE, (47, 91, 123))
+    cursor = Image.new("RGBA", (16, 24), (0, 0, 0, 0))
+    ImageDraw.Draw(cursor).polygon(
+        [(1, 1), (1, 20), (6, 15), (11, 23), (14, 20), (9, 12)],
+        fill=(255, 255, 255, 255),
+    )
+    screenshot.paste(cursor, (960, 540), cursor)
+    encoded = io.BytesIO()
+    screenshot.save(encoded, format="JPEG", quality=92, subsampling=2, optimize=False)
+    return encoded.getvalue()
+
+
+def test_the_canonical_pillow_encoder_is_byte_deterministic_for_an_unchanged_cursor_frame():
+    assert _cursor_composited_jpeg() == _cursor_composited_jpeg()
 
 
 def _json_route(payload, status=200):
@@ -90,19 +130,19 @@ def _json_route(payload, status=200):
 
 
 def test_a_trailing_slash_in_the_base_url_is_normalised():
-    assert OSWorldClient("http://host:5000/").base_url == "http://host:5000"
-    assert OSWorldClient("http://host:5000///").base_url == "http://host:5000"
+    assert DesktopClient("http://host:5000/").base_url == "http://host:5000"
+    assert DesktopClient("http://host:5000///").base_url == "http://host:5000"
 
 
-def test_a_screenshot_comes_back_as_undecoded_bytes(agent):
-    ROUTES["/screenshot"] = (200, PNG, "image/png")
+def test_a_screenshot_comes_back_as_its_original_jpeg_bytes(agent):
+    ROUTES["/screenshot"] = (200, JPEG, "image/jpeg")
     body = agent.screenshot()
-    assert body == PNG
+    assert body == JPEG
     assert isinstance(body, bytes)
 
 
 def test_an_empty_screenshot_body_is_an_error(agent):
-    ROUTES["/screenshot"] = (200, b"", "image/png")
+    ROUTES["/screenshot"] = (200, b"", "image/jpeg")
     with pytest.raises(GuestAgentError, match="/screenshot returned 200"):
         agent.screenshot()
 
@@ -114,9 +154,49 @@ def test_a_non_200_screenshot_is_an_error(agent):
 
 
 def test_an_unreachable_agent_raises_rather_than_hanging():
-    client = OSWorldClient("http://127.0.0.1:1", timeout_s=1.0)
+    client = DesktopClient("http://127.0.0.1:1", timeout_s=1.0)
     with pytest.raises(GuestAgentError, match="failed"):
         client.screenshot()
+
+
+def test_screenshot_does_not_fetch_screen_size_to_validate_its_contract(agent):
+    ROUTES["/screenshot"] = (200, JPEG, "image/jpeg")
+    assert agent.screenshot() == JPEG
+
+
+@pytest.mark.parametrize(
+    "content_type", ["image/png", "text/plain", "application/octet-stream"]
+)
+def test_a_screenshot_with_the_wrong_mime_is_refused(agent, content_type):
+    ROUTES["/screenshot"] = (200, JPEG, content_type)
+    with pytest.raises(GuestAgentError, match="not image/jpeg"):
+        agent.screenshot()
+
+
+@pytest.mark.parametrize("body", [b"jpeg", b"\xff\xd8jpeg", b"jpeg\xff\xd9"])
+def test_a_screenshot_without_complete_jpeg_framing_is_refused(agent, body):
+    ROUTES["/screenshot"] = (200, body, "image/jpeg")
+    with pytest.raises(GuestAgentError, match="invalid JPEG framing"):
+        agent.screenshot()
+
+
+def test_a_corrupt_jpeg_with_markers_is_refused(agent):
+    ROUTES["/screenshot"] = (200, b"\xff\xd8not-a-jpeg\xff\xd9", "image/jpeg")
+    with pytest.raises(GuestAgentError, match="invalid JPEG"):
+        agent.screenshot()
+
+
+@pytest.mark.parametrize(
+    ("mode", "size", "message"),
+    [
+        ("L", OBSERVATION_SIZE, "requires RGB"),
+        ("RGB", (1920, 1079), r"requires \(1920, 1080\)"),
+    ],
+)
+def test_a_jpeg_outside_the_capture_contract_is_refused(agent, mode, size, message):
+    ROUTES["/screenshot"] = (200, _jpeg(mode=mode, size=size), "image/jpeg")
+    with pytest.raises(GuestAgentError, match=message):
+        agent.screenshot()
 
 
 def test_screen_size_is_parsed(agent):
@@ -145,38 +225,42 @@ def test_an_http_error_status_is_reported_with_its_body(agent):
         agent.screen_size()
 
 
-def test_a_successful_execute_returns_the_agents_object(agent):
+def test_a_successful_guest_command_returns_its_streams(agent):
     ROUTES["/execute"] = _json_route(
-        {"status": "success", "returncode": 0, "output": "hello\n"}
+        {"status": "success", "returncode": 0, "output": "hello\n", "error": ""}
     )
-    assert agent.execute(["echo", "hello"])["output"] == "hello\n"
+    result = agent.run_guest(["echo", "hello"])
+    assert result.returncode == 0
+    assert result.stdout == "hello\n"
+    assert result.stderr == ""
 
 
-def test_a_failed_execute_raises_when_checked(agent):
+def test_a_failed_guest_command_returns_its_status(agent):
     ROUTES["/execute"] = _json_route(
-        {"status": "error", "returncode": 2, "error": "no such file"}
+        {
+            "status": "error",
+            "returncode": 2,
+            "output": "",
+            "error": "no such file",
+        }
     )
-    with pytest.raises(GuestAgentError, match="guest command failed"):
-        agent.execute(["false"])
+    result = agent.run_guest(["false"])
+    assert result.returncode == 2
+    assert result.stderr == "no such file"
 
 
-def test_a_failed_execute_is_returned_when_unchecked(agent):
-    ROUTES["/execute"] = _json_route({"status": "error", "returncode": 2})
-    assert agent.execute(["false"], check=False)["returncode"] == 2
-
-
-def test_a_nonzero_returncode_with_success_status_still_fails(agent):
-    """Both conditions are required, so a guest that reports success with a
-    non-zero code cannot slip through."""
-    ROUTES["/execute"] = _json_route({"status": "success", "returncode": 1})
-    with pytest.raises(GuestAgentError, match="guest command failed"):
-        agent.execute(["false"])
+def test_a_status_that_contradicts_the_returncode_is_not_a_command_result(agent):
+    ROUTES["/execute"] = _json_route(
+        {"status": "success", "returncode": 1, "output": "", "error": "failed"}
+    )
+    with pytest.raises(GuestAgentError, match="invalid result"):
+        agent.run_guest(["false"])
 
 
 def test_a_non_object_execute_response_is_an_error(agent):
     ROUTES["/execute"] = _json_route(["not", "an", "object"])
     with pytest.raises(GuestAgentError, match="non-object"):
-        agent.execute(["true"])
+        agent.run_guest(["true"])
 
 
 def test_execute_never_asks_the_agent_for_a_shell(agent):
@@ -187,7 +271,7 @@ def test_execute_never_asks_the_agent_for_a_shell(agent):
         pass
 
     def route():
-        return _json_route({"status": "success", "returncode": 0})
+        return _json_route({"status": "success", "returncode": 0, "output": "", "error": ""})
 
     ROUTES["/execute"] = route
     # Inspect the request body by intercepting at the client level instead.
@@ -198,7 +282,7 @@ def test_execute_never_asks_the_agent_for_a_shell(agent):
         return original(method, path, payload=payload, timeout_s=timeout_s)
 
     agent._request_json = spy  # type: ignore[method-assign]
-    agent.execute(["python", "-c", "print(1)"])
+    agent.run_guest(["python", "-c", "print(1)"])
     assert seen["payload"] == {"command": ["python", "-c", "print(1)"], "shell": False}
 
 
@@ -237,22 +321,32 @@ def test_a_cursor_position_pair_is_parsed(agent):
     "payload", [{"x": 11, "y": 22}, {"x": 1}, [1], [1, 2, 3], "11,22", None]
 )
 def test_a_malformed_cursor_position_is_an_error(agent, payload):
-    """Including the ``{"x", "y"}`` object: ``HttpGuiTransport`` reads the same
-    endpoint and has only ever accepted the array, so accepting both here made
-    two readers of one endpoint disagree about its wire format."""
+    """Including the ``{"x", "y"}`` object: the endpoint has one wire shape."""
     ROUTES["/cursor_position"] = _json_route(payload)
     with pytest.raises(GuestAgentError, match="invalid cursor position"):
         agent.cursor_position()
 
 
 def test_wait_ready_returns_once_the_agent_answers_with_a_body(agent):
-    ROUTES["/screenshot"] = (200, PNG, "image/png")
+    ROUTES["/screenshot"] = (200, JPEG, "image/jpeg")
     agent.wait_ready(timeout_s=5.0, poll_s=0.05)
+
+
+def test_wait_ready_does_not_accept_a_noncanonical_screenshot(agent):
+    calls = {"n": 0}
+
+    def changing():
+        calls["n"] += 1
+        return (200, JPEG, "image/png" if calls["n"] == 1 else "image/jpeg")
+
+    ROUTES["/screenshot"] = changing
+    agent.wait_ready(timeout_s=5.0, poll_s=0.05)
+    assert calls["n"] == 2
 
 
 def test_wait_ready_keeps_polling_a_200_with_an_empty_body(agent):
     """A 200 with no body is an agent that is up without an X server behind it."""
-    ROUTES["/screenshot"] = (200, b"", "image/png")
+    ROUTES["/screenshot"] = (200, b"", "image/jpeg")
     with pytest.raises(TimeoutError, match="not ready"):
         agent.wait_ready(timeout_s=0.4, poll_s=0.05)
 
@@ -264,7 +358,7 @@ def test_wait_ready_becomes_ready_after_a_few_failures(agent):
         calls["n"] += 1
         if calls["n"] < 3:
             return (500, b"", "text/plain")
-        return (200, PNG, "image/png")
+        return (200, JPEG, "image/jpeg")
 
     ROUTES["/screenshot"] = flaky
     agent.wait_ready(timeout_s=5.0, poll_s=0.05)
@@ -272,7 +366,7 @@ def test_wait_ready_becomes_ready_after_a_few_failures(agent):
 
 
 def test_wait_ready_on_an_unreachable_agent_times_out():
-    client = OSWorldClient("http://127.0.0.1:1", timeout_s=0.2)
+    client = DesktopClient("http://127.0.0.1:1", timeout_s=0.2)
     with pytest.raises(TimeoutError, match="not ready"):
         client.wait_ready(timeout_s=0.4, poll_s=0.05)
 
@@ -282,24 +376,25 @@ def test_settled_with_zero_delays_is_exactly_one_screenshot(agent):
 
     def counting():
         calls["n"] += 1
-        return (200, PNG, "image/png")
+        return (200, JPEG, "image/jpeg")
 
     ROUTES["/screenshot"] = counting
-    assert agent.screenshot_settled() == PNG
+    assert agent.screenshot_settled() == JPEG
     assert calls["n"] == 1
 
 
 def test_settled_returns_as_soon_as_two_frames_match(agent):
-    frames = [PNG, PNG + b"a", PNG + b"b", PNG + b"b", PNG + b"c"]
+    settled = _jpeg(128)
+    frames = [_jpeg(0), _jpeg(64), settled, settled, _jpeg(192)]
     calls = {"n": 0}
 
     def changing():
         body = frames[min(calls["n"], len(frames) - 1)]
         calls["n"] += 1
-        return (200, body, "image/png")
+        return (200, body, "image/jpeg")
 
     ROUTES["/screenshot"] = changing
-    assert agent.screenshot_settled(stability_timeout_s=5.0, poll_s=0.01) == PNG + b"b"
+    assert agent.screenshot_settled(stability_timeout_s=5.0, poll_s=0.01) == settled
 
 
 def test_settled_returns_the_last_frame_when_the_desktop_never_stops_moving(agent):
@@ -308,18 +403,348 @@ def test_settled_returns_the_last_frame_when_the_desktop_never_stops_moving(agen
 
     def always_changing():
         calls["n"] += 1
-        return (200, PNG + str(calls["n"]).encode(), "image/png")
+        return (200, _jpeg(calls["n"] * 20), "image/jpeg")
 
     ROUTES["/screenshot"] = always_changing
     body = agent.screenshot_settled(stability_timeout_s=0.3, poll_s=0.01)
-    assert body.startswith(PNG)
+    assert body.startswith(b"\xff\xd8")
     assert calls["n"] > 2
 
 
 def test_settled_honours_the_minimum_delay(agent):
     import time
 
-    ROUTES["/screenshot"] = (200, PNG, "image/png")
+    ROUTES["/screenshot"] = (200, JPEG, "image/jpeg")
     started = time.monotonic()
     agent.screenshot_settled(min_delay_s=0.2)
     assert time.monotonic() - started >= 0.2
+
+
+# ``write_guest_file`` and ``spawn_guest`` are almost entirely program text: one
+# Python one-liner and three POSIX shell scripts.  An agent that recorded the
+# argv would assert that this module composed the strings it meant to compose and
+# nothing about whether they work, so the fake below shells out for real and the
+# guest's filesystem is this host's.
+
+#: Reject the next N ``/execute`` calls with a 503, standing in for the guest
+#: agent restarting under a command.  Reset per test by the fixture.
+AGENT_FAULTS: dict = {"reject_next": 0}
+#: Every request body the executing agent accepted, in order.
+AGENT_CALLS: list = []
+AGENT_CAPABILITY: dict = {"contract": SECRET_STDIN_EXECUTE_CONTRACT}
+AGENT_PROCESS: dict = {"pid": None}
+AGENT_PROCESS_STARTED = threading.Event()
+AGENT_RESPONSES: list = []
+
+
+class _ExecutingHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        if AGENT_CAPABILITY["contract"] is None:
+            self.send_response(405)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        payload = json.dumps(AGENT_CAPABILITY).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+        if AGENT_FAULTS["reject_next"] > 0:
+            AGENT_FAULTS["reject_next"] -= 1
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        AGENT_CALLS.append(body)
+        assert body["shell"] is False, "the agent is never asked for a shell"
+        if "secret_stdin_base64" in body:
+            secret = base64.b64decode(body["secret_stdin_base64"], validate=True)
+            process = subprocess.Popen(
+                body["command"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            AGENT_PROCESS["pid"] = process.pid
+            AGENT_PROCESS_STARTED.set()
+            process.communicate(input=secret)
+            response = {
+                "contract": SECRET_STDIN_EXECUTE_CONTRACT,
+                "status": "success",
+                "returncode": process.returncode,
+            }
+        else:
+            done = subprocess.run(body["command"], capture_output=True, text=True)
+            response = {
+                "status": "success" if done.returncode == 0 else "error",
+                "returncode": done.returncode,
+                "output": done.stdout,
+                "error": done.stderr,
+            }
+        AGENT_RESPONSES.append(response)
+        payload = json.dumps(response).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@pytest.fixture(scope="module")
+def executing_agent_server():
+    class _Server(ThreadingHTTPServer):
+        daemon_threads = True
+
+    server = _Server(("127.0.0.1", 0), _ExecutingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture
+def executing_agent(executing_agent_server):
+    AGENT_FAULTS["reject_next"] = 0
+    AGENT_CALLS.clear()
+    AGENT_CAPABILITY["contract"] = SECRET_STDIN_EXECUTE_CONTRACT
+    AGENT_PROCESS["pid"] = None
+    AGENT_PROCESS_STARTED.clear()
+    AGENT_RESPONSES.clear()
+    return DesktopClient(
+        f"http://127.0.0.1:{executing_agent_server.server_port}", timeout_s=30.0
+    )
+
+
+def test_a_pushed_file_arrives_byte_for_byte(executing_agent, tmp_path):
+    """Bytes that are not text and not valid UTF-8: the payload crosses as base64
+    precisely so nothing on either side interprets it."""
+    target = tmp_path / "payload.bin"
+    content = bytes(range(256)) + b"\n'\"\\ \x00 end"
+    executing_agent.write_guest_file(str(target), content)
+    assert target.read_bytes() == content
+
+
+def test_a_pushed_file_is_never_program_text_the_guest_could_run(executing_agent, tmp_path):
+    target = tmp_path / "quoted.txt"
+    dangerous = b"#!/bin/sh\nshutdown --now\n"
+    executing_agent.write_guest_file(str(target), dangerous)
+    assert target.read_bytes() == dangerous
+    command = AGENT_CALLS[-1]["command"]
+    assert command[:2] == ["python3", "-c"]
+    # The content rides as base64 inside the program, so no byte of it is ever
+    # shell or Python syntax.
+    assert "shutdown" not in command[2]
+
+
+def test_a_relative_guest_path_is_refused(executing_agent):
+    with pytest.raises(ValueError, match="must be absolute"):
+        executing_agent.write_guest_file("relative/path.txt", b"x")
+    assert AGENT_CALLS == [], "a refused path must not reach the guest"
+
+
+def test_a_file_too_large_for_one_argv_element_is_refused(executing_agent, tmp_path):
+    with pytest.raises(ValueError, match="do not fit in one guest argv element"):
+        executing_agent.write_guest_file(str(tmp_path / "huge.bin"), b"x" * 99_000)
+    assert AGENT_CALLS == []
+
+
+def test_the_largest_permitted_file_really_reaches_the_guest(executing_agent, tmp_path):
+    """The cap is the kernel's own ``MAX_ARG_STRLEN``, so the size just under it
+    has to work: a cap picked with margin to spare would pass the refusal test
+    above while refusing files the transport can carry."""
+    target = tmp_path / "big.bin"
+    content = b"x" * 97_000
+    executing_agent.write_guest_file(str(target), content)
+    assert target.read_bytes() == content
+
+
+def test_a_missing_parent_directory_is_reported_rather_than_created(executing_agent, tmp_path):
+    """A caller that named a path whose directory does not exist named the wrong
+    path; creating it silently is guessing."""
+    with pytest.raises(GuestAgentError, match="guest command failed"):
+        executing_agent.write_guest_file(str(tmp_path / "absent" / "f.txt"), b"x")
+    assert not (tmp_path / "absent").exists()
+
+
+def test_secret_stdin_is_a_pipe_and_never_enters_cmdline_logs_or_result(
+    executing_agent, caplog
+):
+    secret = b"guest-password-falsification-93f5\n"
+    program = (
+        "import os,sys,time;"
+        "data=sys.stdin.buffer.read();"
+        "os.write(1,data);os.write(2,data);time.sleep(1)"
+    )
+    outcome: list[BaseException] = []
+
+    def invoke() -> None:
+        try:
+            executing_agent.run_guest_with_secret(
+                ["python3", "-c", program], secret=secret, timeout_s=10.0
+            )
+        except BaseException as error:
+            outcome.append(error)
+
+    thread = threading.Thread(target=invoke)
+    thread.start()
+    assert AGENT_PROCESS_STARTED.wait(timeout=5)
+    pid = AGENT_PROCESS["pid"]
+    assert type(pid) is int
+    cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    assert secret not in cmdline
+    assert base64.b64encode(secret) not in cmdline
+    assert Path(f"/proc/{pid}/fd/0").readlink().as_posix().startswith("pipe:")
+
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert outcome == []
+    assert not Path(f"/proc/{pid}").exists()
+    assert AGENT_RESPONSES[-1] == {
+        "contract": SECRET_STDIN_EXECUTE_CONTRACT,
+        "status": "success",
+        "returncode": 0,
+    }
+    command = AGENT_CALLS[-1]["command"]
+    assert secret not in "\0".join(command).encode("utf-8")
+    assert base64.b64encode(secret) not in "\0".join(command).encode("utf-8")
+    assert secret.decode("utf-8").strip() not in caplog.text
+    assert base64.b64encode(secret).decode("ascii") not in caplog.text
+
+
+def test_an_old_guest_is_refused_before_secret_bytes_are_sent(executing_agent):
+    AGENT_CAPABILITY["contract"] = None
+    with pytest.raises(GuestAgentError, match="GET /execute returned 405"):
+        executing_agent.run_guest_with_secret(
+            ["true"], secret=b"must-not-be-sent", timeout_s=5.0
+        )
+    assert AGENT_CALLS == []
+
+
+def test_a_wrong_secret_stdin_contract_is_refused_before_post(executing_agent):
+    AGENT_CAPABILITY["contract"] = "desktop_execute_secret_stdin_v0"
+    with pytest.raises(GuestAgentError, match="does not attest"):
+        executing_agent.run_guest_with_secret(
+            ["true"], secret=b"must-not-be-sent", timeout_s=5.0
+        )
+    assert AGENT_CALLS == []
+
+
+@pytest.mark.parametrize("secret", [b"", "password", bytearray(b"password")])
+def test_secret_stdin_accepts_only_non_empty_bytes(executing_agent, secret):
+    with pytest.raises(ValueError, match="secret must be non-empty bytes"):
+        executing_agent.run_guest_with_secret(["true"], secret=secret)
+    assert AGENT_CALLS == []
+
+
+def test_a_detached_command_returns_its_code_and_both_streams(executing_agent):
+    result = executing_agent.spawn_guest(
+        ["sh", "-c", "printf to-out; printf to-err >&2; exit 3"], timeout_s=20.0
+    )
+    assert result.returncode == 3
+    assert result.stdout == "to-out"
+    assert result.stderr == "to-err"
+
+
+def test_a_detached_command_does_not_wait_for_a_survivor_it_spawned(executing_agent):
+    """The whole reason this exists.  The agent runs a command as a child and
+    holds its pipes, so a daemon that inherits them keeps ``/execute`` blocked
+    long after the command exited -- here for the five seconds of the ``sleep``.
+    Redirecting the guest's stdio to files is what breaks that hold."""
+    started = time.monotonic()
+    result = executing_agent.spawn_guest(["sh", "-c", "sleep 5 & echo started"], timeout_s=30.0)
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0
+    assert result.stdout.strip() == "started"
+    assert elapsed < 4.0, f"a survivor held the call for {elapsed:.1f}s"
+
+
+def test_a_detached_command_that_overruns_its_timeout_raises_and_cleans_up(
+    executing_agent,
+):
+    with pytest.raises(TimeoutError, match="did not finish within"):
+        executing_agent.spawn_guest(["sleep", "5"], timeout_s=0.5)
+    base = AGENT_CALLS[0]["command"][4]
+    for suffix in (".pid", ".rc", ".out", ".err"):
+        assert not Path(base + suffix).exists(), f"{suffix} survived the timeout"
+    discard = AGENT_CALLS[-1]["command"]
+    assert discard[2].startswith('base=$1\nif [ -n "$2" ]; then kill')
+    assert discard[5].isdigit(), "a timeout must discard with the pid, to kill it"
+
+
+def test_a_finished_detached_command_is_discarded_without_a_kill(executing_agent):
+    executing_agent.spawn_guest(["true"], timeout_s=20.0)
+    discard = AGENT_CALLS[-1]["command"]
+    assert discard[2].startswith('base=$1\nif [ -n "$2" ]; then kill')
+    assert discard[5] == "", "nothing is left to kill, so nothing may be killed"
+
+
+def test_the_environment_reaches_the_command(executing_agent):
+    result = executing_agent.spawn_guest(
+        ["sh", "-c", 'printf %s "$DESKTOP_TEST_TOKEN"'],
+        timeout_s=20.0,
+        env={"DESKTOP_TEST_TOKEN": "a value with spaces"},
+    )
+    assert result.stdout == "a value with spaces"
+
+
+def test_an_environment_name_containing_an_equals_sign_is_refused(executing_agent):
+    """``env`` splits on the FIRST ``=``, so ``{"A=B": "c"}`` would silently set
+    ``A`` to ``B=c`` instead of failing."""
+    with pytest.raises(ValueError, match="invalid guest command environment name"):
+        executing_agent.spawn_guest(["true"], timeout_s=5.0, env={"A=B": "c"})
+    assert AGENT_CALLS == []
+
+
+@pytest.mark.parametrize("argv", [[], [""], ["ok", ""]])
+def test_an_empty_argv_element_is_refused(executing_agent, argv):
+    with pytest.raises(ValueError, match="at least one non-empty string"):
+        executing_agent.spawn_guest(argv, timeout_s=5.0)
+
+
+@pytest.mark.parametrize("timeout_s", [0.0, -1.0])
+def test_a_non_positive_detached_timeout_is_refused(executing_agent, timeout_s):
+    with pytest.raises(ValueError, match="timeout_s must be positive"):
+        executing_agent.spawn_guest(["true"], timeout_s=timeout_s)
+
+
+def test_a_detached_command_survives_a_restart_of_the_guest_agent(executing_agent):
+    """A guest agent restart takes every open connection with it and answers
+    again within seconds; each of the three control calls is idempotent so that
+    the command underneath is unaffected."""
+    AGENT_FAULTS["reject_next"] = 2
+    result = executing_agent.spawn_guest(["echo", "still here"], timeout_s=20.0)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "still here"
+    assert AGENT_FAULTS["reject_next"] == 0
+
+
+def test_a_guest_channel_that_never_answers_gives_up(executing_agent, monkeypatch):
+    """Eight attempts, not forever.  The backoff is flattened because the count
+    and the give-up are under test, not the wall-clock of the sleeps."""
+    import desktop.vm.client as client_module
+
+    monkeypatch.setattr(client_module, "_DETACHED_RETRY_BACKOFF_S", 0.0)
+    AGENT_FAULTS["reject_next"] = 8
+    with pytest.raises(GuestAgentError, match="channel failed 8 times"):
+        executing_agent.spawn_guest(["true"], timeout_s=20.0)
+    assert AGENT_FAULTS["reject_next"] == 0, "it must have used every attempt"
+
+
+@pytest.mark.parametrize("output", ["", "0\n", "0\nYQ==\n\nextra\n", "not-a-code\nYQ==\n\n"])
+def test_a_malformed_detached_result_is_refused(output):
+    """Three lines, the first an exit code.  Anything else is a guest that
+    answered something other than the collect script's output."""
+    with pytest.raises(GuestAgentError, match="invalid detached guest command result"):
+        _decode_detached_result({"returncode": 0, "output": output})

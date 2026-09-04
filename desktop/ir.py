@@ -18,6 +18,7 @@ legal value.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,7 +41,7 @@ class Operation:
         return {"kind": self.kind, "args": list(self.args)}
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "Operation":
+    def from_dict(cls, payload: dict[str, Any]) -> Operation:
         """The inverse of ``as_dict``.
 
         Both keys are required, so a truncated receipt cannot become a
@@ -50,8 +51,10 @@ class Operation:
         return cls(str(payload["kind"]), tuple(payload["args"]))
 
 
-# Argument shapes for the kinds ``desktop.execute.guest_program`` lowers.  No
-# relative member: resolution happens inside a codec's ``compile``.
+# Argument shapes serialized by ``desktop.execute.protocol``. There is no
+# relative member: callers resolve coordinates before constructing this IR.
+
+GLIDE_MAXIMUM_SECONDS = 10.0
 
 CANONICAL_KINDS: dict[str, str] = {
     "move_to": "(x: int, y: int) -- absolute pixel destination",
@@ -69,10 +72,7 @@ CANONICAL_KINDS: dict[str, str] = {
     "key_down": "(key: str) -- a keymap.py key name",
     "key_up": "(key: str)",
     "scroll": "(dx: int, dy: int) -- wheel ticks, +dy up, +dx right",
-    "coalesced_type": (
-        "(text: str) -- exact Unicode becomes input; the executor picks the "
-        "mechanism (keystrokes or a clipboard paste) from the payload"
-    ),
+    "coalesced_type": "(text: str) -- exact Unicode input through direct XTEST key events",
     "ascii_type": "(text: str) -- ASCII only, no newlines, per-keystroke",
     "wait": "(seconds: float) -- clamped to [0, 10]",
     "raise_for_test": "(message: str) -- fault injection for the test suite",
@@ -106,7 +106,17 @@ def glide_to(x: int, y: int, seconds: float) -> Operation:
     some applications (selection handles, canvas tools, scrollbar thumbs) only
     respond to the sweep.
     """
-    return Operation("glide_to", (int(x), int(y), float(seconds)))
+    return Operation("glide_to", (int(x), int(y), glide_seconds(seconds)))
+
+
+def glide_seconds(seconds: float) -> float:
+    """Validate and preserve one requested glide duration."""
+    value = float(seconds)
+    if not math.isfinite(value) or not 0.0 < value <= GLIDE_MAXIMUM_SECONDS:
+        raise ValueError(
+            f"glide seconds must be finite and in (0, {GLIDE_MAXIMUM_SECONDS}], got {value!r}"
+        )
+    return value
 
 
 def click(button: str = "left") -> Operation:

@@ -2,7 +2,7 @@
 
 Not on the original risk list, but ``pool.py`` is the largest file in the package
 and was the second least-exercised.  Everything here runs without a VM because the
-pool's entire requirement of a session is ``close() -> None``.
+pool's entire requirement of a session is ``reset()`` plus ``close()``.
 
 Two seams make it testable: ``session_factory`` and ``port_allocator`` are both
 injected, and ``clock`` is injectable, so lease expiry is testable without
@@ -24,19 +24,33 @@ from desktop.vm.pool import (
     DesktopPoolConfig,
     DesktopSessionPool,
     PortLease,
+    PortRangeLease,
     WorkerPorts,
     ports_for_worker,
 )
 
 
 class FakeSession:
-    """A pooled session: it only has to close."""
+    """A pooled session with observable reset and close boundaries."""
 
     def __init__(self, lease: PortLease) -> None:
         self.lease = lease
         self.closed = 0
         self.close_raises = False
+        self.reset_raises = False
+        self.reset_count = 0
+        self.reset_started = threading.Event()
+        self.reset_gate: threading.Event | None = None
         self.calls: list[str] = []
+
+    def reset(self) -> FakeSession:
+        self.reset_count += 1
+        self.reset_started.set()
+        if self.reset_gate is not None:
+            self.reset_gate.wait(10)
+        if self.reset_raises:
+            raise RuntimeError("reset exploded")
+        return self
 
     def close(self) -> None:
         self.closed += 1
@@ -53,14 +67,6 @@ def fake_allocator_factory(tmp_path: Path):
     counter = {"slot": 0}
     released: list[int] = []
 
-    class FakeLockFile:
-        def __init__(self, slot: int) -> None:
-            self.slot = slot
-            self.closed = False
-
-        def close(self) -> None:
-            self.closed = True
-
     class FakeLease(PortLease):
         def release(self) -> None:
             if self._released:
@@ -75,12 +81,19 @@ def fake_allocator_factory(tmp_path: Path):
         logdir = Path(log_dir) / f"w{slot}"
         workdir.mkdir(parents=True, exist_ok=True)
         logdir.mkdir(parents=True, exist_ok=True)
+        ports = ports_for_worker(50000, slot)
         return FakeLease(
-            ports=ports_for_worker(50000, slot),
+            ports=ports,
             slot=slot,
             workdir=workdir,
             logdir=logdir,
-            _lock_file=FakeLockFile(slot),  # type: ignore[arg-type]
+            _range_lease=PortRangeLease(
+                start=ports.server,
+                count=10,
+                lock_dir=Path(lock_dir),
+                purpose="fake",
+                _lock_files=(),
+            ),
         )
 
     allocate.released = released  # type: ignore[attr-defined]
@@ -239,7 +252,39 @@ def test_a_released_session_is_handed_out_again(pool_factory):
     first.release()
     second = pool.checkout(timeout_s=5)
     assert second.session_id == identifier
+    assert second.env.reset_count == 1
     second.release()
+
+
+def test_a_session_stays_leased_until_its_reset_finishes(pool_factory):
+    pool = pool_factory(min_ready_sessions=1, max_rollouts_per_session=10)
+    pool.start()
+    handle = pool.checkout(timeout_s=5)
+    gate = threading.Event()
+    handle.env.reset_gate = gate
+    release = threading.Thread(target=handle.release)
+    release.start()
+    assert handle.env.reset_started.wait(timeout=5)
+    assert pool.snapshot()["leased"] == 1
+    assert pool.snapshot()["ready"] == 0
+    gate.set()
+    release.join(timeout=5)
+    assert not release.is_alive()
+    assert pool.snapshot()["leased"] == 0
+    assert pool.snapshot()["ready"] == 1
+
+
+def test_a_session_whose_reset_fails_is_retired(pool_factory):
+    pool = pool_factory(min_ready_sessions=1, max_rollouts_per_session=10)
+    pool.start()
+    handle = pool.checkout(timeout_s=5)
+    failed = handle.env
+    failed.reset_raises = True
+    handle.release()
+    assert wait_until(lambda: failed.closed == 1)
+    assert pool.snapshot()["total_failed"] == 1
+    assert "reset failed" in (pool.snapshot()["last_error"] or "")
+    assert wait_until(lambda: len(pool_factory.built) == 2)
 
 
 def test_checkout_times_out_when_nothing_can_be_started(pool_factory):
@@ -275,6 +320,24 @@ def test_a_checked_out_session_is_a_context_manager(pool_factory):
     with pool.checkout(timeout_s=5) as handle:
         assert handle.env is not None
     assert pool.snapshot()["leased"] == 0
+
+
+def test_a_checked_out_session_exposes_the_block_its_lease_holds(pool_factory):
+    """A caller that starts a host-side service beside the desktop needs a port
+    nothing else was given, and the lease is the only thing that knows which."""
+    pool = pool_factory(min_ready_sessions=1)
+    pool.start()
+    with pool.checkout(timeout_s=5) as handle:
+        assert isinstance(handle.ports, WorkerPorts)
+        assert handle.ports == handle.env.lease.ports
+        assert handle.ports.auxiliary_port() == handle.ports.server + 4
+
+
+def test_two_checked_out_sessions_never_share_an_auxiliary_port(pool_factory):
+    pool = pool_factory(min_ready_sessions=2, max_sessions=2)
+    pool.start()
+    with pool.checkout(timeout_s=5) as first, pool.checkout(timeout_s=5) as second:
+        assert set(first.ports.all()).isdisjoint(second.ports.all())
 
 
 def test_an_exception_inside_the_context_retires_the_session(pool_factory):

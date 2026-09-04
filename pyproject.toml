@@ -20,7 +20,7 @@ requires-python = ">=3.12"
 # incompatible dependency graphs (JAX, torch, CUDA, vLLM pins), and a VM layer
 # that pins broadly becomes a resolver conflict that looks like a training bug.
 # HTTP is therefore urllib.request, and screenshots cross every boundary in this
-# package as raw bytes. Pillow is used in one place, desktop/vm/readiness.py.
+# package as raw bytes. Pillow validates the screenshot boundary and readiness.
 #
 # Two external BINARIES are also assumed, because they are not Python and cannot
 # be vendored: qemu-system-x86_64 and apptainer.
@@ -28,7 +28,7 @@ dependencies = ["pillow>=10"]
 
 [project.optional-dependencies]
 # Test-only. Nothing here may be imported by desktop/ itself.
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "python-xlib==0.33"]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -40,7 +40,7 @@ build-backend = "setuptools.build_meta"
 include = ["desktop", "desktop.*"]
 
 [tool.setuptools.package-data]
-"desktop.vm.images" = ["*.def", "*.md"]
+"desktop.vm.images" = ["*.def", "*.md", "*.patch"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,31 +1,12 @@
-"""``coalesced_type`` realisation: which mechanism, and did it actually type.
-
-Two things are tested here that the rest of the suite did not test, and their
-absence is why a total typing failure shipped green:
-
-* **which route the payload takes.**  ``coalesced_type_mechanism`` is the one
-  decision point, so it is asserted directly *and* through the compiled guest
-  program, which is the artefact that runs.
-* **the EFFECT, not the dispatch.**  Every previous coalesced-type test asserted
-  that the program ran and reported ``ok`` -- which the clipboard route does
-  faithfully while typing nothing into a terminal, because ``Ctrl-V`` there is
-  readline's quoted-insert.  ``_GnomeTerminal`` below models just enough of that
-  readline behaviour to answer the only question the gate cares about: did the
-  command execute.  It is deliberately checked against a stream that must FAIL,
-  so a probe that cannot see the defect cannot pass itself off as a green test.
-"""
+"""Direct-XTEST text input and temporary Unicode keymap restoration."""
 
 from __future__ import annotations
 
 import pytest
 
 from desktop import ir
-from desktop.execute.guest_program import (
-    GTK_CLIPBOARD_TYPING_MECHANISM,
-    PYAUTOGUI_WRITE_TYPING_MECHANISM,
-    coalesced_type_mechanism,
-    compile_unicode_coalesced_type,
-)
+from desktop.execute.protocol import ExecutionError, build_action_request
+from desktop.vm.client import ACTION_EXECUTOR_PATH
 
 from .support.guest_runner import run_guest_program
 
@@ -37,147 +18,113 @@ UNICODE_TEXT = "héllo ✓"
     "text",
     ["ls", ASCII_TEXT, "", " ", "~", "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}"],
 )
-def test_printable_ascii_is_typed_directly(text):
-    assert coalesced_type_mechanism(text) == PYAUTOGUI_WRITE_TYPING_MECHANISM
+def test_printable_ascii_uses_the_direct_xtest_program(text):
+    build_action_request((ir.coalesced_type(text),), initial_buttons=set(), initial_keys=set())
+    source = ACTION_EXECUTOR_PATH.read_text()
+    assert "from Xlib import X" in source
+    assert "xtest.fake_input" in source
+    assert "pyautogui" not in source
+    assert "Gtk" not in source
+    assert "clipboard" not in source.lower()
 
 
 @pytest.mark.parametrize("text", [UNICODE_TEXT, "é", "日本語", "🙂", "a\nb", "a\tb"])
-def test_everything_pyautogui_write_would_drop_takes_the_clipboard(text):
-    assert coalesced_type_mechanism(text) == GTK_CLIPBOARD_TYPING_MECHANISM
-
-
-def test_the_mechanism_still_rejects_a_non_string_payload():
-    with pytest.raises(TypeError, match="must be a string"):
-        coalesced_type_mechanism(b"ls")  # type: ignore[arg-type]
-
-
-def test_the_ascii_route_writes_keystrokes_and_never_touches_the_clipboard():
-    source = compile_unicode_coalesced_type(ASCII_TEXT)
-    assert source == f"pyautogui.write({ASCII_TEXT!r},interval=0)"
-    assert "gi" not in source and "ctrl" not in source
-
-    run = run_guest_program((ir.coalesced_type(ASCII_TEXT),), with_gi=True)
+def test_unicode_and_supported_controls_use_the_direct_xtest_program(text):
+    run = run_guest_program((ir.coalesced_type(text),))
     assert run.returncode == 0, run.stderr
     assert run.payload["ok"] is True, run.payload["error"]
-    assert ["write", ASCII_TEXT, 0] in run.pyautogui_calls
-    assert not [call for call in run.pyautogui_calls if call[0] == "hotkey"]
-    assert run.clipboard_text is None
-    assert run.primitives("coalesced_type") == [
-        {
-            "kind": "coalesced_type",
-            "call": PYAUTOGUI_WRITE_TYPING_MECHANISM,
-            "utf8_bytes": len(ASCII_TEXT),
-        }
+    assert run.trace() == [("coalesced_type", [text])]
+    assert {row["backend"] for row in run.primitives()} == {"python-xlib XTEST"}
+
+
+def test_typing_rejects_a_non_string_payload_at_compile_time():
+    with pytest.raises(ExecutionError, match="typing text must be a string"):
+        build_action_request(
+            (ir.Operation("coalesced_type", (b"ls",)),),
+            initial_buttons=set(),
+            initial_keys=set(),
+        )
+
+
+def test_ascii_typing_emits_only_key_events():
+    run = run_guest_program((ir.coalesced_type(ASCII_TEXT),))
+    assert run.returncode == 0, run.stderr
+    events = run.payload["x_injection_evidence"]
+    assert events
+    assert {event["event"] for event in events} == {"key_press", "key_release"}
+    assert run.keymap_restored is True
+
+
+def test_unicode_typing_restores_the_exact_temporary_keysym_row():
+    run = run_guest_program((ir.coalesced_type(UNICODE_TEXT),))
+    assert run.returncode == 0, run.stderr
+    assert run.keymap_restored is True
+    (restoration,) = run.payload["keymap_restorations"]
+    assert restoration["exact"] is True
+    assert restoration["restored"] == restoration["original"]
+
+
+def test_mixed_ascii_and_unicode_preserves_character_order():
+    run = run_guest_program((ir.coalesced_type("a✓b"),))
+    phases = [event["phase"] for event in run.payload["x_injection_evidence"]]
+    assert phases == [
+        "type_down",
+        "type_up",
+        "unicode_down",
+        "unicode_up",
+        "type_down",
+        "type_up",
     ]
 
 
-def test_the_unicode_route_still_pastes_from_the_gtk_clipboard():
-    run = run_guest_program((ir.coalesced_type(UNICODE_TEXT),), with_gi=True)
-    assert run.returncode == 0, run.stderr
-    assert run.payload["ok"] is True, run.payload["error"]
-    assert run.clipboard_text == UNICODE_TEXT
-    assert ["hotkey", ["ctrl", "a"]] in run.pyautogui_calls
-    assert ["hotkey", ["ctrl", "v"]] in run.pyautogui_calls
-    assert not [call for call in run.pyautogui_calls if call[0] == "write"]
-    assert run.primitives("coalesced_type") == [
-        {
-            "kind": "coalesced_type",
-            "call": GTK_CLIPBOARD_TYPING_MECHANISM,
-            "utf8_bytes": len(UNICODE_TEXT.encode("utf-8")),
-        }
+def test_typing_temporarily_clears_and_restores_a_held_modifier():
+    run = run_guest_program((ir.coalesced_type("✓"),), initial_keys={"ControlLeft"})
+    phases = [event["phase"] for event in run.payload["x_injection_evidence"]]
+    assert phases == [
+        "type_modifier_release",
+        "unicode_down",
+        "unicode_up",
+        "type_modifier_restore",
     ]
+    assert run.payload["held_keys"] == ["ctrlleft"]
 
 
-class _GnomeTerminal:
-    """A readline line editor, modelled only where the two routes differ.
-
-    Faithful in the one place that decided the gate: ``Ctrl-V`` is
-    ``quoted-insert``, so it inserts no text and makes the NEXT keypress
-    literal -- which is how the ``Return`` after a "paste" became a ``^M`` in
-    the transcript instead of running anything.  ``Ctrl-A`` is
-    ``beginning-of-line``, not select-all, so the clipboard route's re-assertion
-    of it is also not the editing operation that route assumes.
-
-    Not faithful, and it does not need to be: no cursor-relative insertion, no
-    kill ring, no completion, no PTY.
-    """
-
-    PROMPT = "SOLV2-LS$ "
-
-    def __init__(self) -> None:
-        self.line = ""
-        self.history: list[str] = []
-        self.transcript = self.PROMPT
-        self._quoted_insert_pending = False
-
-    def _insert(self, text: str) -> None:
-        for character in text:
-            if self._quoted_insert_pending:
-                self._quoted_insert_pending = False
-            self.line += character
-            self.transcript += character
-
-    def _enter(self) -> None:
-        if self._quoted_insert_pending:
-            # The literal carriage return readline shows as ^M.  No execution.
-            self._quoted_insert_pending = False
-            self.line += "\r"
-            self.transcript += "^M"
-            return
-        self.history.append(self.line)
-        self.transcript += "\n" + self.line + "\n" + self.PROMPT
-        self.line = ""
-
-    def feed(self, calls: list[list]) -> "_GnomeTerminal":
-        for call in calls:
-            name = call[0]
-            if name == "write":
-                self._insert(str(call[1]))
-            elif name == "hotkey":
-                keys = [str(key).lower() for key in call[1]]
-                if keys == ["ctrl", "v"]:
-                    self._quoted_insert_pending = True
-                # ctrl-a is beginning-of-line: no text, no execution.
-            elif name == "keyDown" and str(call[1]).lower() in {"enter", "return"}:
-                self._enter()
-        return self
-
-    def command_executed(self, command: str) -> bool:
-        """Exact-match a history line, as ``oracle.history_has_exact`` does."""
-        return any(line.strip() == command for line in self.history)
+@pytest.mark.parametrize("text", ["\x00", "\x1f", "\x7f", "\ud800"])
+def test_untypable_codepoints_fail_at_compile_time(text):
+    with pytest.raises(ExecutionError, match="typing text"):
+        build_action_request(
+            (ir.coalesced_type(text),), initial_buttons=set(), initial_keys=set()
+        )
 
 
-def _type_then_return(text: str) -> list[list]:
-    """The guest calls for one scripted "type the text, press Enter" action."""
-    run = run_guest_program(
-        (ir.coalesced_type(text), ir.key_down("Return"), ir.key_up("Return")),
-        with_gi=True,
-    )
-    assert run.returncode == 0, run.stderr
-    assert run.payload["ok"] is True, run.payload["error"]
-    return run.pyautogui_calls
+def test_ascii_type_rejects_unicode_and_embedded_enter_at_compile_time():
+    for text in ("é", "echo\n"):
+        with pytest.raises(ExecutionError):
+            build_action_request(
+                (ir.ascii_type(text),), initial_buttons=set(), initial_keys=set()
+            )
 
 
 @pytest.mark.parametrize("command", ["ls", ASCII_TEXT])
-def test_the_terminal_actually_executes_the_typed_command(command):
-    """The assertion whose absence let a 4/4 gate read 0/4 with zero errors."""
-    terminal = _GnomeTerminal().feed(_type_then_return(command))
-    assert terminal.command_executed(command) is True
-    assert terminal.history == [command]
-    assert "^M" not in terminal.transcript
+def test_typed_command_and_return_share_one_xtest_stream(command):
+    run = run_guest_program(
+        (ir.coalesced_type(command), ir.key_down("Return"), ir.key_up("Return"))
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.payload["ok"] is True, run.payload["error"]
+    phases = [event["phase"] for event in run.payload["x_injection_evidence"]]
+    assert "type_down" in phases
+    assert phases[-2:] == ["key_down", "key_up"]
+    assert run.payload["held_keys"] == []
 
 
-def test_the_probe_can_see_the_clipboard_route_fail_in_a_terminal():
-    """Negative control for the test above -- and the recorded defect itself.
-
-    Without this, ``command_executed is True`` could be passing because the
-    model executes anything.  The clipboard route is still correct for this
-    payload (``pyautogui.write`` would drop it entirely), so what is asserted is
-    a real property of a terminal, not a bug: ``Ctrl-V`` types nothing there and
-    eats the following Return.  That is exactly the transcript observed in job
-    138010 -- ``SOLV2-LS$ ^M``, ``command_executed: false``, no error.
-    """
-    terminal = _GnomeTerminal().feed(_type_then_return(UNICODE_TEXT))
-    assert terminal.command_executed(UNICODE_TEXT) is False
-    assert terminal.history == []
-    assert terminal.transcript == "SOLV2-LS$ ^M"
+def test_unicode_mapping_and_key_state_are_restored_after_xtest_failure():
+    run = run_guest_program((ir.coalesced_type("✓"),), fail_xtest_at=2)
+    assert run.returncode == 1
+    assert run.payload["ok"] is False
+    assert "injected XTEST failure" in run.payload["error"]
+    (restoration,) = run.payload["keymap_restorations"]
+    assert restoration["exact"] is True
+    assert restoration["restored"] == restoration["original"]
+    assert run.keymap_restored is True
+    assert run.held_keycodes == []
